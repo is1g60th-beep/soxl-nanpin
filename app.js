@@ -94,6 +94,8 @@
   async function api(kind, force) {
     const base = (S.settings.workerUrl || '').replace(/\/$/, '');
     if (!base) throw new Error('API中継URLが未設定です（設定画面）');
+    const tok = S.settings.appToken || '';
+    if (tok && !/^[\x21-\x7E]+$/.test(tok)) throw new Error('アプリトークンに全角文字・空白・改行が含まれています。半角英数字と記号だけにしてください');
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 12000);
     try {
@@ -104,7 +106,9 @@
       if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
       return j;
     } catch (e) {
-      throw new Error(e.name === 'AbortError' ? 'タイムアウト' : e.message);
+      if (e.name === 'AbortError') throw new Error('タイムアウト（Workerから応答がありません）');
+      if (e.name === 'TypeError') throw new Error('Workerに接続できません。①URLの誤り ②Workerのコードが未反映（Hello Worldのまま） ③ALLOWED_ORIGINの不一致 のいずれかです');
+      throw e;
     } finally { clearTimeout(t); }
   }
   async function refresh(kind, force) {
@@ -573,7 +577,8 @@
       if (ns.stages.some(st => !(st.alloc >= 0) || (st.type === 'drop' && !(st.drop > 0 && st.drop < 1)))) { alert('投入枠・下落率の値が不正です'); return; }
       ns.feeRounding = fd.get('feeRounding'); ns.yenRounding = fd.get('yenRounding'); ns.reboundMode = fd.get('reboundMode');
       ns.feeFree = fd.get('feeFree') === 'on'; ns.useAskIfAvailable = fd.get('useAskIfAvailable') === 'on';
-      ns.workerUrl = String(fd.get('workerUrl') || '').trim(); ns.appToken = String(fd.get('appToken') || '');
+      ns.workerUrl = String(fd.get('workerUrl') || '').trim(); ns.appToken = String(fd.get('appToken') || '').trim();
+      if (ns.appToken && !/^[\x21-\x7E]+$/.test(ns.appToken)) { alert('アプリトークンには半角英数字と記号だけを使ってください（全角文字・空白は不可）'); return; }
       if (ns.workerUrl && !/^https:\/\//.test(ns.workerUrl)) { alert('API中継URLは https:// で始まる必要があります'); return; }
       if (!confirm('設定を保存しますか？')) return;
       audit('設定変更', { before: s, after: ns });
@@ -586,7 +591,7 @@
     });
     $('#btnTest').addEventListener('click', async () => {
       const out = $('#testResult'); out.textContent = 'テスト中…';
-      const url = $('[name=workerUrl]').value.trim(); const tok = $('[name=appToken]').value;
+      const url = $('[name=workerUrl]').value.trim(); const tok = $('[name=appToken]').value.trim();
       const saved = { u: S.settings.workerUrl, t: S.settings.appToken };
       S.settings.workerUrl = url; S.settings.appToken = tok;
       const res = [];
