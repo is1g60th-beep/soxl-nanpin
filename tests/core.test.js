@@ -223,3 +223,35 @@ test('追加: 手数料上限22ドル・RSI計算・週足確定判定', () => {
   const w = C.weeklyRsi(bars, 14, '2026-11-18T10:00');
   assert.ok(w.provisional != null && w.confirmed != null);
 });
+
+test('セキュリティ: バックアップにアプリトークンを含めない（変更履歴の中も）', () => {
+  const s = { ...S(), workerUrl: 'https://x.workers.dev', appToken: 'SECRET-TOKEN' };
+  const st = { settings: s, entries: [], audit: [{ at: '2026-11-21T00:00:00Z', action: '設定変更', detail: { before: s, after: s } }], cache: { quote: 1 }, manual: { price: 20 } };
+  const out = JSON.stringify(C.exportState(st));
+  assert.ok(!out.includes('SECRET-TOKEN'));
+  assert.ok(!out.includes('"cache"') && !out.includes('"manual"'));
+});
+
+test('セキュリティ: 不正な復元データを無害化・拒否', () => {
+  const evil = {
+    settings: { ...S(), workerUrl: 'javascript:alert(1)', feeRate: '<img src=x onerror=alert(1)>', stages: [{ alloc: '<b>' }] },
+    entries: [{ kind: 'buy', shares: 155, fillPrice: 20, paidYen: 498363, note: '<script>x</script>', date: '<img>', id: '"><svg onload=1>' }],
+    touches: [{ stage: '<x>', at: '<img>', price: 'NaN' }], notifs: [{ title: 1 }], touchFlags: { '<x>': true }, notifKeys: { '<x>': 1 },
+  };
+  const r = C.sanitizeState(evil);
+  assert.equal(r.settings.workerUrl, '');
+  assert.equal(r.settings.feeRate, S().feeRate);
+  assert.equal(r.settings.stages[0].alloc, 500000);
+  assert.equal(r.entries[0].date, '');
+  assert.equal(r.entries[0].id.includes('<'), false);
+  assert.equal(r.touches[0].at, null);
+  assert.deepEqual(r.touchFlags, {}); assert.deepEqual(r.notifKeys, {});
+  assert.equal(typeof r.entries[0].shares, 'number');
+  assert.throws(() => C.sanitizeState({ settings: {}, entries: [{ kind: 'buy', shares: '1<b>', fillPrice: 20, paidYen: 1 }] }));
+  assert.throws(() => C.sanitizeState({ settings: {} }));
+  assert.throws(() => C.sanitizeState({ entries: [{ kind: 'hack' }] }));
+  // 正常なバックアップは往復で一致
+  const ok = { settings: S(), entries: [{ kind: 'buy', id: 'e1', stage: 0, date: '2026-11-21', shares: 155, fillPrice: 20, paidYen: 498363, amountUsd: 3100, feeUsd: 15.35 }] };
+  const rt = C.sanitizeState(JSON.parse(JSON.stringify(C.exportState(ok))));
+  assert.equal(C.planStatus(rt, rt.settings).available, C.planStatus(ok, ok.settings).available);
+});

@@ -23,11 +23,25 @@
       if (!raw) return blankState();
       const st = JSON.parse(raw);
       const b = blankState();
-      return { ...b, ...st, settings: { ...b.settings, ...st.settings }, manual: { ...b.manual, ...st.manual }, cache: { ...b.cache, ...st.cache } };
+      return { ...b, ...C.sanitizeState(st), manual: sanitizeManual(st.manual), cache: { ...b.cache, ...(st.cache && typeof st.cache === 'object' ? st.cache : {}) } };
     } catch (e) {
       alert('保存データの読み込みに失敗しました。バックアップから復元してください。\n' + e.message);
       return blankState();
     }
+  }
+  function sanitizeManual(m) {
+    const b = blankState().manual;
+    if (!m || typeof m !== 'object') return b;
+    const out = {};
+    for (const k of Object.keys(b)) { const v = m[k]; out[k] = typeof v === 'number' && isFinite(v) ? v : null; }
+    return out;
+  }
+  /** 外部データで置き換えるとき、中継URLとトークンは端末の現在値を維持（偽の中継先に差し替えられるのを防ぐ） */
+  function adoptState(raw, keepCache) {
+    const clean = C.sanitizeState(raw);
+    clean.settings.workerUrl = S.settings.workerUrl;
+    clean.settings.appToken = S.settings.appToken;
+    return { ...blankState(), ...clean, cache: keepCache ? S.cache : blankState().cache };
   }
   let S = load();
   function save() {
@@ -37,12 +51,12 @@
   function snapshot(reason) {
     try {
       const list = JSON.parse(localStorage.getItem(SNAP_KEY) || '[]');
-      list.unshift({ at: new Date().toISOString(), reason, data: { ...S, cache: undefined } });
+      list.unshift({ at: new Date().toISOString(), reason, data: C.exportState(S) });
       localStorage.setItem(SNAP_KEY, JSON.stringify(list.slice(0, 10)));
     } catch (_) { /* 容量不足時はスキップ */ }
   }
   function audit(action, detail) {
-    S.audit.unshift({ at: new Date().toISOString(), action, detail });
+    S.audit.unshift({ at: new Date().toISOString(), action, detail: C.stripSecrets(detail) });
     S.audit = S.audit.slice(0, 300);
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
@@ -478,7 +492,7 @@
       cum += st.alloc;
       const e = entries[i];
       if (e && e.kind === 'buy') paidCum += e.paidYen;
-      const status = e ? (e.kind === 'buy' ? `購入 ${e.shares}株` : '見送り') : (i === ps.nextStage ? '監視中' : '未到達');
+      const status = e ? (e.kind === 'buy' ? `購入 ${esc(e.shares)}株` : '見送り') : (i === ps.nextStage ? '監視中' : '未到達');
       return `<tr><td>${esc(st.name)}</td><td>${st.type === 'rsi' ? `RSI≤${s.rsiThreshold}` : `-${(st.drop * 100).toFixed(1)}%`}</td><td>${yen(st.alloc)}</td><td>${e && e.kind === 'buy' ? yen(e.paidYen) : '—'}</td><td>${e ? yen(cum - paidCum) : '—'}</td><td>${status}</td></tr>`;
     }).join('');
     const allocSum = s.stages.reduce((a, x) => a + x.alloc, 0);
@@ -511,7 +525,7 @@
     const s = S.settings;
     const stageRows = s.stages.map((st, i) => `<tr><td>${esc(st.name)}</td>
       <td>${st.type === 'rsi' ? 'RSI' : `<input name="drop${i}" value="${(st.drop * 100).toFixed(2).replace(/\.?0+$/, '')}" inputmode="decimal" style="width:80px">`}</td>
-      <td><input name="alloc${i}" value="${st.alloc}" inputmode="numeric" style="width:120px"></td></tr>`).join('');
+      <td><input name="alloc${i}" value="${esc(st.alloc)}" inputmode="numeric" style="width:120px"></td></tr>`).join('');
     const notifState = 'Notification' in window ? Notification.permission : 'unsupported';
     main.innerHTML = `<form id="setForm">
       <div class="card"><h2>購入条件・投入枠</h2>
@@ -584,26 +598,28 @@
       out.innerHTML = res.map(esc).join('<br>');
     });
     $('#btnNotif').addEventListener('click', async () => { await Notification.requestPermission(); renderSettings(); });
-    $('#btnExport').addEventListener('click', () => download(`soxl-nanpin-backup-${todayJst()}.json`, JSON.stringify({ ...S, exportedAt: new Date().toISOString() }, null, 2), 'application/json'));
+    $('#btnExport').addEventListener('click', () => download(`soxl-nanpin-backup-${todayJst()}.json`, JSON.stringify(C.exportState(S), null, 2), 'application/json'));
     $('#btnCsv').addEventListener('click', () => download(`soxl-nanpin-history-${todayJst()}.csv`, C.toCsv(S, S.settings), 'text/csv'));
     $('#fileImport').addEventListener('change', async e => {
       const file = e.target.files[0]; if (!file) return;
       try {
+        if (file.size > 5 * 1024 * 1024) throw new Error('ファイルが大きすぎます');
         const data = JSON.parse(await file.text());
-        if (!data || !Array.isArray(data.entries) || !data.settings) throw new Error('このアプリのバックアップ形式ではありません');
-        if (!confirm(`バックアップ（記録${data.entries.length}件）で現在のデータを置き換えます。よろしいですか？`)) return;
-        snapshot('復元前'); const b = blankState();
-        S = { ...b, ...data, settings: { ...b.settings, ...data.settings }, manual: b.manual, cache: { ...b.cache, ...(data.cache || {}) } };
-        audit('JSONから復元', { file: file.name }); save(); toast('復元しました'); schedule(); setTab('home'); refreshAll(false);
+        const next = adoptState(data, false); // 形式チェック（不正なら例外）
+        const fileUrl = data && data.settings && typeof data.settings.workerUrl === 'string' ? data.settings.workerUrl : '';
+        const urlNote = fileUrl && fileUrl !== S.settings.workerUrl ? `\n\n※ファイル内のAPI中継URL（${fileUrl}）は使わず、この端末の設定を維持します。` : '';
+        if (!confirm(`バックアップ（記録${next.entries.length}件）で現在のデータを置き換えます。よろしいですか？${urlNote}`)) return;
+        snapshot('復元前'); S = next;
+        audit('JSONから復元', { file: String(file.name).slice(0, 100) }); save(); toast('復元しました'); schedule(); setTab('home'); refreshAll(false);
       } catch (err) { alert('復元に失敗しました: ' + err.message); }
     });
     $('#btnSnaps').addEventListener('click', () => {
       const list = JSON.parse(localStorage.getItem(SNAP_KEY) || '[]');
       if (!list.length) { alert('自動バックアップはまだありません'); return; }
-      openDialog(`<h3 style="margin-top:0">自動バックアップから復元</h3><select name="i">${list.map((x, i) => `<option value="${i}">${new Date(x.at).toLocaleString('ja-JP')}（${esc(x.reason)}・記録${(x.data.entries || []).filter(e => !e.deleted).length}件）</option>`).join('')}</select>`, fd => {
+      openDialog(`<h3 style="margin-top:0">自動バックアップから復元</h3><select name="i">${list.map((x, i) => `<option value="${i}">${esc(new Date(x.at).toLocaleString('ja-JP'))}（${esc(x.reason)}・記録${Array.isArray(x.data && x.data.entries) ? x.data.entries.filter(e => e && !e.deleted).length : 0}件）</option>`).join('')}</select>`, fd => {
         if (!confirm('選択した時点の状態に戻します。よろしいですか？')) return true;
         const pick = list[Number(fd.i)]; snapshot('自動バックアップ復元前');
-        const b = blankState(); S = { ...b, ...pick.data, settings: { ...b.settings, ...pick.data.settings }, cache: S.cache };
+        try { S = adoptState(pick.data, true); } catch (err) { alert('この自動バックアップは読み込めません: ' + err.message); return; }
         audit('自動バックアップから復元', { at: pick.at }); save(); setTab('home');
       });
     });

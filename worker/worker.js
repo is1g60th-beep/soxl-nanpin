@@ -4,7 +4,7 @@
  * APIキーはWorkerのシークレット(環境変数)にのみ保存し、ブラウザには渡さない。
  *   FINNHUB_KEY     … SOXL株価・米国市場の開場状況（Finnhub 無料: 60回/分）
  *   TWELVEDATA_KEY  … USD/JPY・SOXL週足（Twelve Data 無料: 8回/分・800回/日）
- *   APP_TOKEN       … 任意。設定するとアプリ側で同じトークンが必要（他人によるAPI枠消費を防止）
+ *   APP_TOKEN       … 必須。アプリ側の「アプリトークン」と同じ値（他人によるAPI枠消費を防止）
  *   ALLOWED_ORIGIN  … 例 https://<ユーザー名>.github.io （カンマ区切りで複数可）
  *
  * エンドポイント:
@@ -28,7 +28,10 @@ export default {
       'Vary': 'Origin',
     };
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
-    if (env.APP_TOKEN && req.headers.get('X-App-Token') !== env.APP_TOKEN) {
+    if (!env.APP_TOKEN) {
+      return json({ error: 'WorkerにAPP_TOKENが設定されていません（他人に利用枠を使われるのを防ぐため必須）' }, 500, cors);
+    }
+    if (!safeEqual(req.headers.get('X-App-Token') || '', env.APP_TOKEN)) {
       return json({ error: 'トークンが一致しません' }, 401, cors);
     }
     const kind = url.pathname.replace(/^\/api\//, '');
@@ -55,36 +58,52 @@ export default {
   },
 };
 
+/** 文字列の比較時間から合言葉を推測されないよう、長さに関係なく全体を比較する */
+function safeEqual(a, b) {
+  const enc = new TextEncoder();
+  const x = enc.encode(a), y = enc.encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);
+  return diff === 0;
+}
+
 function json(obj, status, headers) {
   return new Response(JSON.stringify(obj), { status, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
 }
 
-async function getJson(u) {
-  const r = await fetch(u, { cf: { cacheTtl: 0 } });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+/**
+ * APIキーはURLに含めず、リクエストヘッダーで送る（各社のアクセスログ等にキーが残りにくくする）
+ *   Finnhub     : X-Finnhub-Token ヘッダー
+ *   Twelve Data : Authorization: apikey <キー>
+ */
+async function getJson(u, headers) {
+  const r = await fetch(u, { headers, cf: { cacheTtl: 0 } });
+  if (!r.ok) throw new Error(`データ提供元の応答エラー（HTTP ${r.status}）`);
   const j = await r.json();
-  if (j && (j.status === 'error' || j.code >= 400)) throw new Error(j.message || 'APIエラー');
+  if (j && (j.status === 'error' || j.code >= 400)) throw new Error('データ提供元のエラー: ' + String(j.message || '').slice(0, 120));
   return j;
 }
+const finnhub = (env, path) => getJson(`https://finnhub.io/api/v1/${path}`, { 'X-Finnhub-Token': env.FINNHUB_KEY });
+const twelve = (env, path) => getJson(`https://api.twelvedata.com/${path}`, { Authorization: `apikey ${env.TWELVEDATA_KEY}` });
 
 async function getQuote(env) {
   let market = { isOpen: false, session: null, holiday: null };
   try {
-    const m = await getJson(`https://finnhub.io/api/v1/stock/market-status?exchange=US&token=${env.FINNHUB_KEY}`);
+    const m = await finnhub(env, 'stock/market-status?exchange=US');
     market = { isOpen: !!m.isOpen, session: m.session || null, holiday: m.holiday || null };
   } catch (_) { /* 開場状況が取れなくても価格は返す */ }
 
   // 1) Finnhub
   if (env.FINNHUB_KEY) {
     try {
-      const q = await getJson(`https://finnhub.io/api/v1/quote?symbol=SOXL&token=${env.FINNHUB_KEY}`);
+      const q = await finnhub(env, 'quote?symbol=SOXL');
       if (q.c > 0) {
         return { source: 'Finnhub', price: q.c, ask: null, bid: null, prevClose: q.pc, changePct: q.dp, ts: q.t * 1000, ...market };
       }
     } catch (_) { /* フォールバックへ */ }
   }
   // 2) Twelve Data（フォールバック）
-  const t = await getJson(`https://api.twelvedata.com/quote?symbol=SOXL&prepost=true&apikey=${env.TWELVEDATA_KEY}`);
+  const t = await twelve(env, 'quote?symbol=SOXL&prepost=true');
   const ts = (t.last_quote_at || t.timestamp) * 1000;
   return {
     source: 'Twelve Data', price: Number(t.close), ask: null, bid: null, prevClose: Number(t.previous_close),
@@ -95,7 +114,7 @@ async function getQuote(env) {
 }
 
 async function getFx(env) {
-  const t = await getJson(`https://api.twelvedata.com/quote?symbol=USD/JPY&apikey=${env.TWELVEDATA_KEY}`);
+  const t = await twelve(env, 'quote?symbol=USD/JPY');
   return {
     source: 'Twelve Data', market: Number(t.close),
     ts: (t.last_quote_at || t.timestamp) * 1000,
@@ -104,7 +123,7 @@ async function getFx(env) {
 }
 
 async function getWeekly(env) {
-  const t = await getJson(`https://api.twelvedata.com/time_series?symbol=SOXL&interval=1week&outputsize=120&order=ASC&apikey=${env.TWELVEDATA_KEY}`);
+  const t = await twelve(env, 'time_series?symbol=SOXL&interval=1week&outputsize=120&order=ASC');
   const bars = (t.values || []).map(v => ({ date: v.datetime.slice(0, 10), close: Number(v.close) }));
   return { source: 'Twelve Data', bars };
 }

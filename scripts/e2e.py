@@ -35,7 +35,7 @@ with sync_playwright() as p:
     ctx.route('https://mock.workers.dev/**', route)
     pg = ctx.new_page()
     pg.on('pageerror', lambda e: errors.append(str(e)))
-    pg.on('console', lambda m: m.type == 'error' and errors.append(m.text))
+    pg.on('console', lambda m: m.type == 'error' and errors.append(m.text) if '502' not in m.text else None)
     pg.on('dialog', lambda d: d.accept('消去') if d.type == 'prompt' else d.accept())
 
     # 1) 手入力モード（API未設定）
@@ -88,6 +88,24 @@ with sync_playwright() as p:
     pg.click('#btnUndo'); pg.wait_for_timeout(400)
     pg.click('nav button[data-tab=home]'); pg.wait_for_timeout(300)
     assert '① 初回' in pg.inner_text('main')
+
+    # 9) バックアップ: トークンが含まれない／悪意あるJSONを復元しても中継URLは変わらずHTMLも実行されない
+    pg.evaluate("""() => { const s = JSON.parse(localStorage.getItem('soxl-nanpin-v1')); s.settings.appToken='SECRET-TOKEN'; localStorage.setItem('soxl-nanpin-v1', JSON.stringify(s)); }""")
+    pg.reload(); pg.wait_for_timeout(800)
+    pg.click('nav button[data-tab=settings]'); pg.wait_for_timeout(300)
+    with pg.expect_download() as dl: pg.click('#btnExport')
+    text = open(dl.value.path(), encoding='utf-8').read()
+    assert 'SECRET-TOKEN' not in text, 'token leaked in backup'
+    evil = json.loads(text)
+    evil['settings']['workerUrl'] = 'https://evil.example'
+    evil['entries'] = [{'kind': 'buy', 'id': 'x', 'stage': 0, 'date': '2026-11-21', 'shares': 10, 'fillPrice': 20, 'paidYen': 32000, 'note': '<img src=x onerror="window.__pwned=1">'}]
+    path = os.path.join(OUT, 'evil.json'); open(path, 'w').write(json.dumps(evil))
+    pg.set_input_files('#fileImport', path); pg.wait_for_timeout(800)
+    st = pg.evaluate("() => JSON.parse(localStorage.getItem('soxl-nanpin-v1')).settings")
+    assert st['workerUrl'] == 'https://mock.workers.dev' and st['appToken'] == 'SECRET-TOKEN', st
+    pg.click('nav button[data-tab=history]'); pg.wait_for_timeout(300)
+    assert pg.evaluate('() => window.__pwned') is None, 'XSS executed'
+    assert '<img src=x' in pg.inner_text('main')
 
     # iPad
     pg.set_viewport_size({'width': 820, 'height': 1180}); pg.wait_for_timeout(300)

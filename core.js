@@ -350,7 +350,98 @@
     }).join(',')).join('\r\n');
   }
 
+  // ---------- 保存データの検証（復元・読込時） ----------
+  const SECRET_KEYS = ['appToken'];
+  /** 入れ子のオブジェクトから秘密情報のキーを取り除いた複製を返す */
+  function stripSecrets(obj) {
+    if (obj === undefined) return undefined;
+    try { return JSON.parse(JSON.stringify(obj, (k, v) => SECRET_KEYS.includes(k) ? undefined : v)); } catch (_) { return null; }
+  }
+  const finite = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && v.trim() !== '' && isFinite(Number(v)) ? Number(v) : null);
+  const str = (v, max) => v == null ? '' : String(v).slice(0, max || 500);
+  const isoish = v => (typeof v === 'string' && /^[0-9TZ:.\-+ ]{8,40}$/.test(v)) ? v : null;
+  const dateStr = v => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) ? v : '';
+  const msOrIso = v => typeof v === 'number' ? (isFinite(v) ? v : null) : isoish(v);
+
+  function sanitizeSettings(raw) {
+    const d = defaultSettings();
+    const out = { ...d };
+    if (!raw || typeof raw !== 'object') return out;
+    for (const k of Object.keys(d)) {
+      if (k === 'stages' || !(k in raw)) continue;
+      const def = d[k];
+      if (typeof def === 'number') { const n = finite(raw[k]); if (n != null && n >= 0) out[k] = n; }
+      else if (typeof def === 'boolean') out[k] = raw[k] === true;
+      else if (typeof def === 'string') out[k] = str(raw[k], 300);
+    }
+    if (!['ceil', 'floor', 'round'].includes(out.feeRounding)) out.feeRounding = d.feeRounding;
+    if (!['ceil', 'floor', 'round'].includes(out.yenRounding)) out.yenRounding = d.yenRounding;
+    if (!['history', 'latch'].includes(out.reboundMode)) out.reboundMode = d.reboundMode;
+    if (out.workerUrl && !/^https:\/\/[A-Za-z0-9.\-]+(:\d+)?(\/[A-Za-z0-9._~\-\/]*)?$/.test(out.workerUrl)) out.workerUrl = '';
+    if (Array.isArray(raw.stages) && raw.stages.length === d.stages.length) {
+      out.stages = d.stages.map((def, i) => {
+        const r = raw.stages[i] || {};
+        const alloc = finite(r.alloc);
+        const drop = finite(r.drop);
+        return { ...def, alloc: alloc != null && alloc >= 0 ? alloc : def.alloc, drop: def.type === 'drop' && drop != null && drop > 0 && drop < 1 ? drop : def.drop };
+      });
+    }
+    if (typeof raw.appToken === 'string') out.appToken = str(raw.appToken, 200);
+    return out;
+  }
+
+  function sanitizeEntry(e) {
+    if (!e || typeof e !== 'object' || !['buy', 'skip'].includes(e.kind)) return null;
+    const base = {
+      id: str(e.id, 40).replace(/[^A-Za-z0-9_\-]/g, '') || ('e' + Math.random().toString(36).slice(2, 10)),
+      kind: e.kind, stage: Math.max(0, Math.floor(finite(e.stage) || 0)), date: dateStr(e.date), note: str(e.note, 500),
+      createdAt: isoish(e.createdAt), deleted: e.deleted === true, deletedAt: isoish(e.deletedAt), editedAt: isoish(e.editedAt),
+    };
+    if (e.kind === 'skip') return base;
+    const shares = finite(e.shares), fillPrice = finite(e.fillPrice), paidYen = finite(e.paidYen);
+    if (!(shares > 0) || !Number.isInteger(shares) || !(fillPrice > 0) || !(paidYen >= 0)) return null;
+    const amountUsd = finite(e.amountUsd);
+    return {
+      ...base, fillPrice, shares, paidYen,
+      fxRate: finite(e.fxRate), amountUsd: amountUsd != null ? amountUsd : fillPrice * shares,
+      feeUsd: finite(e.feeUsd) || 0, paidIsActual: e.paidIsActual !== false,
+      amountYen: finite(e.amountYen), remainingAfter: finite(e.remainingAfter), carryNext: finite(e.carryNext),
+      nextRefPrice: fillPrice, estimate: null,
+    };
+  }
+
+  /**
+   * 外部から読み込んだデータ（JSON復元・自動バックアップ・端末内保存）を検証し、
+   * 想定どおりの型の値だけを残す。画面へ不正なHTMLや値が入るのを防ぐ。
+   */
+  function sanitizeState(raw) {
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.entries)) throw new Error('このアプリのデータ形式ではありません');
+    const settings = sanitizeSettings(raw.settings);
+    const entries = raw.entries.slice(0, 100).map(sanitizeEntry);
+    if (entries.some(e => e === null)) throw new Error('購入記録に不正な値が含まれています');
+    const touches = (Array.isArray(raw.touches) ? raw.touches : []).slice(-500).map(t => ({
+      stage: Math.max(0, Math.floor(finite(t && t.stage) || 0)), at: msOrIso(t && t.at), price: finite(t && t.price),
+      target: finite(t && t.target), rsi: finite(t && t.rsi), type: t && t.type === 'rsi' ? 'rsi' : 'drop', reboundAt: msOrIso(t && t.reboundAt),
+    }));
+    const notifs = (Array.isArray(raw.notifs) ? raw.notifs : []).slice(0, 100).map(n => ({ at: finite(n && n.at), title: str(n && n.title, 200), body: str(n && n.body, 500) }));
+    const audit = (Array.isArray(raw.audit) ? raw.audit : []).slice(0, 300).map(a => ({ at: isoish(a && a.at), action: str(a && a.action, 100), detail: stripSecrets(a && a.detail) }));
+    const flags = {};
+    if (raw.touchFlags && typeof raw.touchFlags === 'object') for (const [k, v] of Object.entries(raw.touchFlags)) if (/^stage\d+$/.test(k)) flags[k] = v === true;
+    const notifKeys = {};
+    if (raw.notifKeys && typeof raw.notifKeys === 'object') for (const [k, v] of Object.entries(raw.notifKeys)) if (/^[A-Za-z0-9\-]{1,60}$/.test(k) && finite(v) != null) notifKeys[k] = finite(v);
+    return { version: 1, settings, entries, touches, touchFlags: flags, notifs, notifKeys, audit };
+  }
+
+  /** バックアップ書き出し用：秘密情報（アプリトークン）を除く */
+  function exportState(state) {
+    const settings = { ...state.settings };
+    for (const k of SECRET_KEYS) delete settings[k];
+    const { cache, manual, ...rest } = state;
+    return { ...stripSecrets(rest), settings, exportedAt: new Date().toISOString() };
+  }
+
   const Core = {
+    sanitizeState, sanitizeSettings, exportState, stripSecrets,
     defaultSettings, roundTo, commissionUsd, appliedRate, estimate, maxShares,
     planStatus, targetPrice, projectedTargets, evaluateCondition, updateTouchHistory, displayCondition,
     rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness,

@@ -33,7 +33,7 @@ Workerでキャッシュ（株価15秒・為替60秒・週足1時間）するの
    - Settings → Variables and Secrets に以下を登録：
      - `FINNHUB_KEY`（Secret）
      - `TWELVEDATA_KEY`（Secret）
-     - `APP_TOKEN`（Secret・任意の長い文字列。他人に枠を使われないため）
+     - `APP_TOKEN`（Secret・**必須**。自分で決めた長い合言葉。未設定だとWorkerは動きません）
      - `ALLOWED_ORIGIN`（Text・例 `https://yourname.github.io`）
    - PCがある場合は `cd worker && npx wrangler deploy` でも同じことができます。
 5. **アプリの設定画面**で、WorkerのURL（`https://xxx.workers.dev`）と `APP_TOKEN` を入力し、「接続テスト」→「設定を保存」。
@@ -65,15 +65,24 @@ APIを設定しなくても、「手入力」モードで株価・為替・RSI�
 6. **Twelve Data週足の日付**：週の初日の日付を想定し、月曜に直してから確定・暫定を判定しています。実データで要確認です。
 7. **プッシュ通知**：アプリを開いている間のみ通知します。アプリを閉じている間も通知するには、Workerの Cron Triggers と Web Push（VAPID）を追加する必要があります（今後の拡張）。
 
-## 5. 今後の拡張（任意）
+## 5. セキュリティ対策
+
+- **APIキー**：Workerのシークレットにのみ保存し、データ提供元へは**URLではなくヘッダー**で送ります（Finnhub: `X-Finnhub-Token`、Twelve Data: `Authorization: apikey`）。
+- **Workerの呼び出し制限**：`APP_TOKEN` を必須にしています。比較は、所要時間から合言葉を推測されない方式です。
+- **バックアップ**：JSONにはアプリトークンを含めません（変更履歴の中からも削除します）。
+- **復元時の検証**：読み込んだデータは、型と形式をチェックしてから使います。不正な値を含む購入記録は拒否します。**API中継URLとトークンはファイルの値を使わず、端末の現在値を維持します**（偽の価格を出す中継先に差し替えられるのを防ぐため）。
+- **画面表示**：利用者が入力した文字列は、すべて無害化してから表示します。
+- **利用者側でお願いしたいこと**：GitHub・Cloudflare・Finnhub・Twelve Dataで2段階認証を有効にすること。他人から受け取ったJSONは復元しないこと。このアプリが楽天証券のログイン情報を求めることはありません。
+
+## 6. 今後の拡張（任意）
 
 - **端末間の同期**：Cloudflare KVかD1に保存し、Cloudflare Accessなどで認証する。
 - **閉じている間の通知**：Cron Triggers で5分ごとに条件を判定し、Web Pushで知らせる。
 - **有料APIへの切り替え**：`worker.js` の `getQuote` を書き換えるだけで、アプリ側は変更不要。
 
-## 6. テスト
+## 7. テスト
 
 ```
-node --test tests/core.test.js      # 計算テスト21件（仕様書の必須20件＋追加1件）
+node --test tests/core.test.js      # 計算・セキュリティのテスト23件
 pip install playwright && python3 scripts/e2e.py   # 画面の動作確認（モックAPI）
 ```
