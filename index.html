@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SOXLナンピン">
+<title>SOXLナンピン管理</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root{
+  --bg:#0b1120;--panel:#111a2e;--panel2:#16213a;--line:#24304b;--text:#e6ebf5;--muted:#8b97b1;
+  --accent:#4f8cff;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444;--hit:#e11d48;
+  --r:14px;--mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f3f5fa;--panel:#fff;--panel2:#f7f9fd;--line:#dfe5f0;--text:#111827;--muted:#64708a}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;-webkit-text-size-adjust:100%}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:calc(env(safe-area-inset-top) + 8px) 16px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0;flex:1}
+main{max-width:760px;margin:0 auto;padding:12px 12px calc(84px + env(safe-area-inset-bottom))}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:6}
+nav button{flex:1;background:none;border:0;color:var(--muted);padding:10px 0 8px;font-size:12px;display:flex;flex-direction:column;align-items:center;gap:2px}
+nav button.on{color:var(--accent)}
+nav svg{width:22px;height:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px}
+.card h2{font-size:13px;color:var(--muted);margin:0 0 10px;font-weight:600;letter-spacing:.02em}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (min-width:700px){.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}}
+.big{font-size:30px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em}
+.mid{font-size:20px;font-weight:700;font-family:var(--mono)}
+.sub{font-size:12px;color:var(--muted)}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700;vertical-align:middle;border:1px solid transparent}
+.b-live{background:rgba(34,197,94,.15);color:var(--good)}
+.b-delayed,.b-extended{background:rgba(245,158,11,.15);color:var(--warn)}
+.b-closed{background:rgba(139,151,177,.18);color:var(--muted)}
+.b-error,.b-stale{background:rgba(239,68,68,.15);color:var(--bad)}
+.b-manual{background:rgba(79,140,255,.15);color:var(--accent)}
+.rows{display:grid;grid-template-columns:1fr auto;gap:6px 12px;font-size:14px}
+.rows dt{color:var(--muted)} .rows dd{margin:0;text-align:right;font-family:var(--mono)}
+.rows .strong{font-weight:700;color:var(--text)} .rows .sep{grid-column:1/-1;border-top:1px dashed var(--line);margin:4px 0}
+.status{border-radius:var(--r);padding:14px;margin-bottom:12px;border:2px solid var(--line);background:var(--panel)}
+.status.hit{border-color:var(--hit);background:linear-gradient(0deg,rgba(225,29,72,.10),rgba(225,29,72,.10)),var(--panel)}
+.status.near{border-color:var(--warn)}
+.status .label{font-weight:800;font-size:18px}
+.bar{height:8px;background:var(--panel2);border-radius:99px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+button.b{border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:10px;padding:10px 14px;font-size:14px;font-weight:600}
+button.b.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.b.danger{color:var(--bad)}
+button.b:disabled{opacity:.45}
+button.icon{background:none;border:0;color:var(--text);padding:6px;border-radius:8px}
+.alert{border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:13px;border:1px solid}
+.alert.err{border-color:rgba(239,68,68,.5);background:rgba(239,68,68,.08)}
+.alert.warn{border-color:rgba(245,158,11,.5);background:rgba(245,158,11,.08)}
+.alert.info{border-color:rgba(79,140,255,.45);background:rgba(79,140,255,.08)}
+label.f{display:block;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+input,select,textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--panel2);color:var(--text);font-size:16px;font-family:inherit}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+.tbl{overflow-x:auto}
+dialog{border:1px solid var(--line);border-radius:16px;background:var(--panel);color:var(--text);width:min(520px,94vw);padding:16px;max-height:88vh}
+dialog::backdrop{background:rgba(0,0,0,.55)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(90px + env(safe-area-inset-bottom));background:#111827;color:#fff;padding:10px 16px;border-radius:12px;font-size:14px;z-index:20;max-width:90vw;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+.stagelist{display:flex;gap:6px;margin-top:8px}
+.stagelist span{flex:1;text-align:center;font-size:11px;padding:6px 0;border-radius:8px;background:var(--panel2);color:var(--muted)}
+.stagelist span.done{background:rgba(34,197,94,.15);color:var(--good)}
+.stagelist span.skip{background:rgba(139,151,177,.18)}
+.stagelist span.cur{outline:2px solid var(--accent);color:var(--text)}
+.hidden{display:none!important}
+.muted{color:var(--muted)}
+.note{font-size:12px;color:var(--muted);margin-top:8px}
+.notif{font-size:13px;padding:8px 0;border-bottom:1px solid var(--line)}
+.notif:last-child{border:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>SOXL ナンピン管理</h1>
+  <span id="hdrStatus" class="sub"></span>
+  <button class="icon" id="btnRefresh" aria-label="更新"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+</header>
+<main id="main"></main>
+<nav id="nav">
+  <button data-tab="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>監視</button>
+  <button data-tab="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>履歴</button>
+  <button data-tab="funds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v9l6 4"/></svg>資金</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>設定</button>
+</nav>
+<dialog id="dlg"></dialog>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

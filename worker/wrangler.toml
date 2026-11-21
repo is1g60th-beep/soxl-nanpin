@@ -1,0 +1,12 @@
+name = "soxl-nanpin-api"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+# GitHub PagesのURL（末尾スラッシュなし）。複数ある場合はカンマ区切り
+ALLOWED_ORIGIN = "https://YOUR-NAME.github.io"
+
+# シークレットは以下で登録（このファイルには書かない）
+#   npx wrangler secret put FINNHUB_KEY
+#   npx wrangler secret put TWELVEDATA_KEY
+#   npx wrangler secret put APP_TOKEN
