@@ -171,7 +171,7 @@
     }
     // --- 為替 ---
     const f = S.cache.fx;
-    const ff = C.fxFreshness(live.errors.fx ? { error: live.errors.fx } : f, now, s);
+    const ff = C.fxFreshness(live.errors.fx ? { error: live.errors.fx } : f, now, s, nowNyIso());
     const manualMarketOk = m.market > 0 && (now - m.marketAt) / 60000 <= MANUAL_EXPIRE_MIN;
     const manualAppliedOk = m.applied > 0 && (now - m.appliedAt) / 60000 <= MANUAL_EXPIRE_MIN;
     let fx = { market: null, applied: manualAppliedOk ? m.applied : null, appliedAt: m.appliedAt, code: 'error', label: '未取得', at: null, usable: false };

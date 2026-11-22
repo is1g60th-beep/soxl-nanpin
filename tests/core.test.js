@@ -301,3 +301,22 @@ test('VIX: 自動取得と手入力は新しいほうを使う', () => {
   assert.equal(C.marketSignals({ vix: 30, vixManual: false, spDd: 0.1 }, s).items[0].manual, false);
   assert.equal(C.marketSignals({ vix: 30, vixManual: true, spDd: 0.1 }, s).items[0].manual, true);
 });
+
+test('為替: 週末休場中は「更新停止」にせず計算を続ける', () => {
+  const s = S(), now = Date.now();
+  const old = { market: 158.5, ts: now - 436 * 60000, marketClosed: false }; // 提供元は「開場中」と返している
+  // 日曜 10:33 NY（日本時間 日曜23:33）→ 休場
+  assert.equal(C.isFxWeekend('2026-11-22T09:33'), true);
+  const f = C.fxFreshness(old, now, s, '2026-11-22T09:33');
+  assert.equal(f.code, 'closed'); assert.equal(f.usable, true);
+  // 境界: 金曜16:59は開場、17:00から休場、日曜16:59まで休場、17:00から開場
+  assert.equal(C.isFxWeekend('2026-11-20T16:59'), false);
+  assert.equal(C.isFxWeekend('2026-11-20T17:00'), true);
+  assert.equal(C.isFxWeekend('2026-11-21T12:00'), true);
+  assert.equal(C.isFxWeekend('2026-11-22T16:59'), true);
+  assert.equal(C.isFxWeekend('2026-11-22T17:00'), false);
+  // 平日は従来どおり30分で更新停止
+  assert.equal(C.fxFreshness(old, now, s, '2026-11-24T10:00').code, 'stale');
+  // 休場中でも3日以上前の値は使わない
+  assert.equal(C.fxFreshness({ market: 158, ts: now - 80 * 3600000 }, now, s, '2026-11-22T09:33').usable, false);
+});

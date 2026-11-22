@@ -293,12 +293,26 @@
     return { label: '休場', code: 'closed', usable: true, ageMin };
   }
 
-  function fxFreshness(fx, nowMs, s) {
+  /**
+   * 為替市場の週末休場か（ニューヨーク時間 金曜17:00 〜 日曜17:00）。
+   * 日本時間ではおおむね 土曜6〜7時 〜 月曜6〜7時。データ提供元の「開場中」フラグは週末も true を返すことがあるため自前で判定する。
+   */
+  function isFxWeekend(nowNyIso) {
+    if (!nowNyIso) return false;
+    const dow = new Date(nowNyIso.slice(0, 10) + 'T00:00:00Z').getUTCDay();
+    const hour = Number(nowNyIso.slice(11, 13));
+    return (dow === 5 && hour >= 17) || dow === 6 || (dow === 0 && hour < 17);
+  }
+
+  function fxFreshness(fx, nowMs, s, nowNyIso) {
     if (!fx || fx.error) return { label: 'エラー', code: 'error', usable: false, reason: fx && fx.error ? fx.error : '未取得' };
     if (!(fx.market > 0) || !fx.ts) return { label: 'エラー', code: 'error', usable: false, reason: 'レートなし' };
     const ageMin = (nowMs - fx.ts) / 60000;
-    // 為替は週末休場。土日は古くても使用可とし「休場」表示。
-    if (fx.marketClosed) return { label: '休場', code: 'closed', usable: true, ageMin };
+    // 週末休場中は直近のレート（金曜の終値付近）で計算してよい。ただし3日以上前の値は使わない
+    if (fx.marketClosed || isFxWeekend(nowNyIso)) {
+      if (ageMin > 72 * 60) return { label: '更新停止', code: 'stale', usable: false, ageMin, reason: `休場中ですが、${Math.round(ageMin / 60)}時間前の古いレートしかありません` };
+      return { label: '休場', code: 'closed', usable: true, ageMin };
+    }
     if (ageMin > s.staleMinutesFx) return { label: '更新停止', code: 'stale', usable: false, ageMin, reason: `${Math.round(ageMin)}分間更新されていません` };
     return { label: ageMin <= 2 ? 'リアルタイム' : '遅延', code: ageMin <= 2 ? 'live' : 'delayed', usable: true, ageMin };
   }
@@ -553,7 +567,7 @@
     sanitizeState, sanitizeSettings, exportState, stripSecrets, drawdownFromHigh, marketSignals, isoWeekKey, pickVix,
     defaultSettings, roundTo, commissionUsd, appliedRate, estimate, maxShares,
     planStatus, targetPrice, projectedTargets, evaluateCondition, updateTouchHistory, displayCondition,
-    rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness,
+    rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness, isFxWeekend,
     buildBuyEntry, buildSkipEntry, activeEntries, toCsv,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;
