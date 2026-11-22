@@ -14,7 +14,7 @@
       version: 1, settings: C.defaultSettings(), entries: [], touches: [], touchFlags: {},
       notifs: [], notifKeys: {}, audit: [],
       manual: { price: null, priceAt: null, applied: null, appliedAt: null, market: null, marketAt: null, rsi: null, rsiAt: null },
-      cache: { quote: null, fx: null, weekly: null, market: null },
+      cache: { quote: null, fx: null, weekly: null, market: null, vix: null },
       envManual: { vix: null, vixAt: null, zbt: null, zbtFired: false, zbtAt: null, divergence: null, divAt: null },
       checklist: { week: null, items: {} },
     };
@@ -105,7 +105,7 @@
         headers: S.settings.appToken ? { 'X-App-Token': S.settings.appToken } : {}, signal: ctl.signal, cache: 'no-store',
       });
       const j = await r.json().catch(() => ({}));
-      if (r.status === 404 && kind === 'market') throw new Error('Workerが古い版です。最新の worker.js をCloudflareに貼り直してください');
+      if (r.status === 404 && (kind === 'market' || kind === 'vix')) throw new Error('Workerが古い版です。最新の worker.js をCloudflareに貼り直してください');
       if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
       return j;
     } catch (e) {
@@ -134,6 +134,7 @@
     if (force || !w || Date.now() - (w.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('weekly', force);
     const mk = S.cache.market;
     if (force || !mk || Date.now() - (mk.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('market', force);
+    refresh('vix', force);
   }
   let timers = [];
   function schedule() {
@@ -144,6 +145,7 @@
     timers.push(setInterval(() => !document.hidden && refresh('fx'), Math.max(30, s.refreshSecFx) * 1000));
     timers.push(setInterval(() => !document.hidden && refresh('weekly'), Math.max(15, s.refreshMinRsi) * 60000));
     timers.push(setInterval(() => !document.hidden && refresh('market'), Math.max(15, s.refreshMinRsi) * 60000));
+    timers.push(setInterval(() => !document.hidden && refresh('vix'), 5 * 60000)); // 公開データへの負荷を抑えて5分ごと
     timers.push(setInterval(() => !document.hidden && tick(), 15000)); // 鮮度表示の更新
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(false); });
@@ -199,10 +201,12 @@
     const spDdInfo = mk.spy ? C.drawdownFromHigh(mk.spy) : null;
     const semi = mk.soxx && mk.soxx.length ? C.weeklyRsi(mk.soxx, s.rsiPeriod, nowNyIso()) : null;
     const em = S.envManual;
+    const vixPick = C.pickVix(live.errors.vix ? null : S.cache.vix, em);
     const env = {
+      vixPick, vixError: live.errors.vix || null,
       spDdInfo, semi, fetchedAt: mk.fetchedAt || null, error: live.errors.market || mk.spyError || mk.soxxError || null,
       signals: C.marketSignals({ soxlRsi: rsi.confirmed, semiRsi: semi ? semi.confirmed : null, spDd: spDdInfo ? spDdInfo.dd : null,
-        vix: em.vix, zbt: em.zbt, zbtFired: em.zbtFired, divergence: em.divergence }, s),
+        vix: vixPick.value, vixManual: vixPick.source === 'manual', zbt: em.zbt, zbtFired: em.zbtFired, divergence: em.divergence }, s),
     };
     return { price, fx, fxForCalc, rsi, ps, cond, disp, calc, calcBlocked, env };
   }
@@ -433,14 +437,14 @@
     const fmt = it => {
       if (it.key === 'spdd') return env.spDdInfo ? '−' + pct(env.spDdInfo.dd, 2) : '—';
       if (it.key === 'soxlrsi' || it.key === 'semirsi') return it.value != null ? num(it.value, 1) : '—';
-      if (it.key === 'vix') return em.vix != null ? num(em.vix, 2) : '—';
+      if (it.key === 'vix') return env.vixPick.value != null ? num(env.vixPick.value, 2) : '—';
       if (it.key === 'zbt') return em.zbtFired ? '発動' : em.zbt != null ? num(em.zbt, 2) : '—';
       return '';
     };
     const rows = sg.items.map(it => `<div class="envrow">
       <div class="envname">${esc(it.label)}${it.manual ? ' <span class="sub">手入力</span>' : ''}</div>
       <div class="envval">${fmt(it) || '—'}</div><div class="envdir">${dirBadge(it.dir)}</div>
-      <div class="envstate"><b>${esc(it.state)}</b>　<span class="sub">判断ライン：${esc(it.line)}</span></div></div>`).join('');
+      <div class="envstate"><b>${esc(it.state)}</b>　<span class="sub">判断ライン：${esc(it.line)}</span>${it.key === 'vix' ? `<div class="sub">取得元：${esc(env.vixPick.label)}${env.vixPick.changePct != null ? `（前日比 ${env.vixPick.changePct >= 0 ? '+' : ''}${num(env.vixPick.changePct, 2)}%）` : ''}${env.vixError ? `　<span style="color:var(--warn)">自動取得エラー：${esc(env.vixError)}</span>` : ''}</div>` : ''}</div></div>`).join('');
     const sp = env.spDdInfo;
     const semiTxt = env.semi && env.semi.provisional != null ? `（暫定 ${num(env.semi.provisional, 1)}）` : '';
     const manualAt = [em.vixAt, em.zbtAt, em.divAt].filter(Boolean);
@@ -451,7 +455,7 @@
       <div class="note">${sp ? `SPYの高値 ${usd(sp.high)}（${esc(sp.highDate)}）→ ${usd(sp.last)}（${esc(sp.lastDate)}）。` : ''}半導体RSIはSOXX（SOX指数の代替）${semiTxt}。
         自動取得 ${env.fetchedAt ? jst(env.fetchedAt) : '—'}${manualAt.length ? `／手入力 ${jst(Math.max(...manualAt))}` : ''}。<br>
         資料「VIXとSOXL：2つの話を合わせた相場の見方（2026年11月）」の見方を整理したもので、購入条件には使いません。投資助言ではありません。</div>
-      <div class="btns"><button class="b" id="btnEnv">VIX・ZBT・ダイバージェンスを入力</button></div></div>`;
+      <div class="btns"><button class="b" id="btnEnv">ZBT・ダイバージェンス・VIXを入力</button></div></div>`;
   }
 
   const CHECK_ITEMS = [
@@ -475,8 +479,8 @@
   function openEnvInput() {
     const em = S.envManual;
     openDialog(`<h3 style="margin-top:0">参考指標の入力</h3>
-      <div class="sub">自動取得できない指標です。チャートや動画で確認した値を入れてください。空欄はそのまま（未入力）になります。</div>
-      ${field('vix', 'VIX', em.vix ?? '', 'inputmode="decimal"')}
+      <div class="sub">チャートや動画で確認した値を入れてください。空欄は未入力になります。</div>
+      ${field('vix', 'VIX（自動取得より新しい場合に使われます）', em.vix ?? '', 'inputmode="decimal"')}
       ${field('zbt', 'ZBT インジケーターの値', em.zbt ?? '', 'inputmode="decimal"')}
       <label class="f"><input type="checkbox" name="zbtFired" ${em.zbtFired ? 'checked' : ''} style="width:auto"> ZBTが発動した</label>
       <label class="f">SOXL 日足の強気ダイバージェンス</label>
@@ -719,8 +723,8 @@
       const saved = { u: S.settings.workerUrl, t: S.settings.appToken };
       S.settings.workerUrl = url; S.settings.appToken = tok;
       const res = [];
-      for (const k of ['quote', 'fx', 'weekly', 'market']) {
-        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : k === 'market' ? `SPY ${j.spy ? j.spy.length + '日分' : '✗'}・SOXX ${j.soxx ? j.soxx.length + '週分' : '✗'}` : j.bars.length + '週分'}`); }
+      for (const k of ['quote', 'fx', 'weekly', 'market', 'vix']) {
+        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : k === 'vix' ? `${num(j.vix, 2)}（${j.source}${j.source === 'FRED' ? '・終値 ' + j.asOf : '・約15分遅れ'}）` : k === 'market' ? `SPY ${j.spy ? j.spy.length + '日分' : '✗'}・SOXX ${j.soxx ? j.soxx.length + '週分' : '✗'}` : j.bars.length + '週分'}`); }
         catch (e) { res.push(`✗ ${k}: ${e.message}`); }
       }
       S.settings.workerUrl = saved.u; S.settings.appToken = saved.t;

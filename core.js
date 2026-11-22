@@ -384,7 +384,7 @@
         else if (vix >= s.envVixLine) { state = `VIX ${s.envVixLine}超（下落率は${s.envVixDdPct}%未満）`; }
         else state = `VIX ${s.envVixLine}未満`;
       }
-      out.push({ key: 'vix', label: `VIX（${s.envVixLine}突破時のS&P500下落率）`, value: vix, line: `${s.envVixLine}突破かつ下落${s.envVixDdPct}%以上`, state, dir, manual: true });
+      out.push({ key: 'vix', label: `VIX（${s.envVixLine}突破時のS&P500下落率）`, value: vix, line: `${s.envVixLine}突破かつ下落${s.envVixDdPct}%以上`, state, dir, manual: input.vixManual === true });
     }
     // 2) S&P500 高値からの下落率
     {
@@ -423,6 +423,22 @@
     }
     const count = d => out.filter(x => x.dir === d).length;
     return { items: out, down: count('down'), wait: count('wait'), up: count('up'), buy: count('buy') };
+  }
+
+  /**
+   * VIXの値を選ぶ。自動取得（Cboe/FRED）と手入力のうち、新しいほうを使う。
+   * auto: { vix, source, kind, asOf, fetchedAt } / manual: { vix, vixAt }
+   */
+  function pickVix(auto, manual) {
+    const a = auto && auto.vix > 0 ? auto : null;
+    const m = manual && manual.vix != null && manual.vixAt ? manual : null;
+    if (a && (!m || (a.fetchedAt || 0) >= m.vixAt)) {
+      const label = a.source === 'Cboe' ? `Cboe・約15分遅れ（${a.asOf || '時刻不明'}${a.asOfTz ? ' ' + a.asOfTz : ''}）`
+        : a.source === 'FRED' ? `FRED・終値（${a.asOf || '日付不明'}）` : String(a.source || '自動');
+      return { value: a.vix, source: a.source, label, auto: true, changePct: a.changePct ?? null };
+    }
+    if (m) return { value: m.vix, source: 'manual', label: '手入力', auto: false, changePct: null };
+    return { value: null, source: null, label: '未取得', auto: false, changePct: null };
   }
 
   /** ISO週の識別子（チェックリストの週ごとのリセット用） 例 '2026-W47' */
@@ -534,7 +550,7 @@
   }
 
   const Core = {
-    sanitizeState, sanitizeSettings, exportState, stripSecrets, drawdownFromHigh, marketSignals, isoWeekKey,
+    sanitizeState, sanitizeSettings, exportState, stripSecrets, drawdownFromHigh, marketSignals, isoWeekKey, pickVix,
     defaultSettings, roundTo, commissionUsd, appliedRate, estimate, maxShares,
     planStatus, targetPrice, projectedTargets, evaluateCondition, updateTouchHistory, displayCondition,
     rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness,

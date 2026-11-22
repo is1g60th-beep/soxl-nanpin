@@ -287,3 +287,17 @@ test('相場環境: 高値からの下落率と週キー', () => {
   assert.equal(st.envManual.vix, null); assert.equal(st.envManual.zbt, 0.32); assert.equal(st.envManual.divergence, null);
   assert.equal(st.checklist.week, null); assert.deepEqual(st.checklist.items, { rsi: true });
 });
+
+test('VIX: 自動取得と手入力は新しいほうを使う', () => {
+  const auto = { vix: 29.62, source: 'Cboe', asOf: '2026-11-20T16:14:59', asOfTz: 'ET', fetchedAt: 2000, changePct: 18 };
+  assert.equal(C.pickVix(auto, { vix: 25, vixAt: 1000 }).value, 29.62);
+  assert.match(C.pickVix(auto, null).label, /Cboe・約15分遅れ/);
+  assert.equal(C.pickVix(auto, { vix: 31, vixAt: 3000 }).source, 'manual');
+  assert.equal(C.pickVix(null, { vix: 31, vixAt: 3000 }).value, 31);
+  assert.match(C.pickVix({ vix: 29.3, source: 'FRED', asOf: '2026-11-20', fetchedAt: 1 }, null).label, /FRED・終値（2026-11-20）/);
+  assert.equal(C.pickVix(null, { vix: null, vixAt: null }).value, null);
+  // 自動取得のVIXは「手入力」扱いにしない
+  const s = S();
+  assert.equal(C.marketSignals({ vix: 30, vixManual: false, spDd: 0.1 }, s).items[0].manual, false);
+  assert.equal(C.marketSignals({ vix: 30, vixManual: true, spDd: 0.1 }, s).items[0].manual, true);
+});
