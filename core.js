@@ -38,6 +38,12 @@
       refreshSecFx: 180,
       refreshMinRsi: 60,
       workerUrl: '',
+      // 相場環境（参考指標）の判断ライン。購入条件には使わない
+      envVixLine: 29,          // VIX
+      envVixDdPct: 8,          // VIX29突破時にS&P500が高値から何%以上下落していれば「該当」
+      envBuyZoneDdPct: 20,     // S&P500の下落率がこれに近づくとSOXL買い場の前提
+      envSemiRsiLine: 30,      // 半導体の週足RSIの底の目安
+      envZbtLow: 0.40,         // ZBT: この値を下回ると売られすぎ
     };
   }
 
@@ -350,6 +356,85 @@
     }).join(',')).join('\r\n');
   }
 
+  // ---------- 相場環境（参考指標） ----------
+  /** 日足（古い順）から、直近の高値と現在の下落率を求める */
+  function drawdownFromHigh(bars) {
+    if (!bars || !bars.length) return null;
+    let hi = -Infinity, hiDate = null;
+    for (const b of bars) { const c = Number(b.close); if (c > hi) { hi = c; hiDate = b.date; } }
+    const last = bars[bars.length - 1];
+    const lastClose = Number(last.close);
+    if (!(hi > 0) || !(lastClose > 0)) return null;
+    return { high: hi, highDate: hiDate, last: lastClose, lastDate: last.date, dd: (hi - lastClose) / hi };
+  }
+
+  /**
+   * 資料「VIXとSOXL」（2026年11月）のシグナル一覧を評価する。
+   * 返り値の dir: 'down'=下落継続を示す / 'wait'=条件未到達（待ち） / 'up'=反発を示す / 'buy'=買いの条件に到達 / null=該当なし・不明
+   * 購入条件の判定には使わない（参考表示のみ）。
+   */
+  function marketSignals(input, s) {
+    const { soxlRsi, semiRsi, spDd, vix, zbt, zbtFired, divergence } = input;
+    const out = [];
+    // 1) VIX29突破 × S&P500下落率
+    {
+      let state = '未入力', dir = null;
+      if (vix != null) {
+        if (vix >= s.envVixLine && spDd != null && spDd * 100 >= s.envVixDdPct) { state = '該当（過去は最終20%前後の下落が多い）'; dir = 'down'; }
+        else if (vix >= s.envVixLine) { state = `VIX ${s.envVixLine}超（下落率は${s.envVixDdPct}%未満）`; }
+        else state = `VIX ${s.envVixLine}未満`;
+      }
+      out.push({ key: 'vix', label: `VIX（${s.envVixLine}突破時のS&P500下落率）`, value: vix, line: `${s.envVixLine}突破かつ下落${s.envVixDdPct}%以上`, state, dir, manual: true });
+    }
+    // 2) S&P500 高値からの下落率
+    {
+      let state = '未取得', dir = null;
+      if (spDd != null) {
+        const pct = spDd * 100;
+        if (pct >= s.envBuyZoneDdPct) { state = 'SOXL買い場の前提に到達'; dir = 'buy'; }
+        else { state = `まだ甘い（あと${(s.envBuyZoneDdPct - pct).toFixed(1)}%）`; dir = 'wait'; }
+      }
+      out.push({ key: 'spdd', label: 'S&P500 高値からの下落', value: spDd, line: `約${s.envBuyZoneDdPct}%でSOXL買い場`, state, dir });
+    }
+    // 3) SOXL 週足RSI（確定）
+    {
+      let state = '未取得', dir = null;
+      if (soxlRsi != null) { if (soxlRsi <= s.rsiThreshold) { state = '買いシグナル点灯'; dir = 'buy'; } else { state = 'まだ未点灯'; dir = 'wait'; } }
+      out.push({ key: 'soxlrsi', label: 'SOXL 週足RSI（確定）', value: soxlRsi, line: `${s.rsiThreshold}以下で買い（週末確定）`, state, dir });
+    }
+    // 4) 半導体 週足RSI
+    {
+      let state = '未取得', dir = null;
+      if (semiRsi != null) { if (semiRsi <= s.envSemiRsiLine) { state = '底の目安に到達'; dir = 'buy'; } else { state = 'まだ未到達'; dir = 'wait'; } }
+      out.push({ key: 'semirsi', label: '半導体 週足RSI（SOX指数の代替：SOXX）', value: semiRsi, line: `過去の底は${s.envSemiRsiLine}付近`, state, dir });
+    }
+    // 5) SOXL 日足ダイバージェンス
+    {
+      const map = { active: ['強気で発生中', 'up'], gone: ['消滅（安値を深く更新）', 'down'], none: ['なし', null] };
+      const [state, dir] = map[divergence] || ['未入力', null];
+      out.push({ key: 'div', label: 'SOXL 日足ダイバージェンス', value: null, line: '安値をもう一段深く更新すると消滅', state, dir, manual: true });
+    }
+    // 6) ZBT インジケーター
+    {
+      let state = '未入力', dir = null;
+      if (zbtFired) { state = '発動'; dir = 'up'; }
+      else if (zbt != null) { if (zbt < s.envZbtLow) { state = '売られすぎ（いずれ発動の可能性）'; dir = 'up'; } else state = '未発動'; }
+      out.push({ key: 'zbt', label: 'ZBT インジケーター', value: zbt, line: `${s.envZbtLow}未満で売られすぎ／発動で反発`, state, dir, manual: true });
+    }
+    const count = d => out.filter(x => x.dir === d).length;
+    return { items: out, down: count('down'), wait: count('wait'), up: count('up'), buy: count('buy') };
+  }
+
+  /** ISO週の識別子（チェックリストの週ごとのリセット用） 例 '2026-W47' */
+  function isoWeekKey(date) {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    const day = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - day);
+    const y = d.getUTCFullYear();
+    const wk = Math.ceil(((d - Date.UTC(y, 0, 1)) / 86400000 + 1) / 7);
+    return `${y}-W${String(wk).padStart(2, '0')}`;
+  }
+
   // ---------- 保存データの検証（復元・読込時） ----------
   const SECRET_KEYS = ['appToken'];
   /** 入れ子のオブジェクトから秘密情報のキーを取り除いた複製を返す */
@@ -429,7 +514,15 @@
     if (raw.touchFlags && typeof raw.touchFlags === 'object') for (const [k, v] of Object.entries(raw.touchFlags)) if (/^stage\d+$/.test(k)) flags[k] = v === true;
     const notifKeys = {};
     if (raw.notifKeys && typeof raw.notifKeys === 'object') for (const [k, v] of Object.entries(raw.notifKeys)) if (/^[A-Za-z0-9\-]{1,60}$/.test(k) && finite(v) != null) notifKeys[k] = finite(v);
-    return { version: 1, settings, entries, touches, touchFlags: flags, notifs, notifKeys, audit };
+    const em = raw.envManual && typeof raw.envManual === 'object' ? raw.envManual : {};
+    const envManual = {
+      vix: finite(em.vix), vixAt: finite(em.vixAt), zbt: finite(em.zbt), zbtFired: em.zbtFired === true, zbtAt: finite(em.zbtAt),
+      divergence: ['active', 'gone', 'none'].includes(em.divergence) ? em.divergence : null, divAt: finite(em.divAt),
+    };
+    const cl = raw.checklist && typeof raw.checklist === 'object' ? raw.checklist : {};
+    const checklist = { week: typeof cl.week === 'string' && /^\d{4}-W\d{2}$/.test(cl.week) ? cl.week : null, items: {} };
+    if (cl.items && typeof cl.items === 'object') for (const [k, v] of Object.entries(cl.items)) if (/^[a-z0-9]{1,20}$/.test(k)) checklist.items[k] = v === true;
+    return { version: 1, settings, entries, touches, touchFlags: flags, notifs, notifKeys, audit, envManual, checklist };
   }
 
   /** バックアップ書き出し用：秘密情報（アプリトークン）を除く */
@@ -441,7 +534,7 @@
   }
 
   const Core = {
-    sanitizeState, sanitizeSettings, exportState, stripSecrets,
+    sanitizeState, sanitizeSettings, exportState, stripSecrets, drawdownFromHigh, marketSignals, isoWeekKey,
     defaultSettings, roundTo, commissionUsd, appliedRate, estimate, maxShares,
     planStatus, targetPrice, projectedTargets, evaluateCondition, updateTouchHistory, displayCondition,
     rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness,

@@ -255,3 +255,35 @@ test('セキュリティ: 不正な復元データを無害化・拒否', () => 
   const rt = C.sanitizeState(JSON.parse(JSON.stringify(C.exportState(ok))));
   assert.equal(C.planStatus(rt, rt.settings).available, C.planStatus(ok, ok.settings).available);
 });
+
+test('相場環境: 資料の数値（2026年11月20〜22日時点）で判定が資料と一致', () => {
+  const s = S();
+  const r = C.marketSignals({ soxlRsi: 34.5, semiRsi: 35.58, spDd: 0.1162, vix: 29.5, zbt: 0.32, zbtFired: false, divergence: 'active' }, s);
+  const by = k => r.items.find(x => x.key === k);
+  assert.equal(by('vix').dir, 'down');      // VIX29突破かつ8%以上下落 → 下落継続
+  assert.equal(by('spdd').dir, 'wait');     // 約10%、20%未満 → まだ甘い
+  assert.equal(by('soxlrsi').dir, 'wait');  // 34.5 → 未点灯
+  assert.equal(by('semirsi').dir, 'wait');  // 35.58 → 未到達
+  assert.equal(by('div').dir, 'up');        // 強気ダイバージェンス発生中 → 反発
+  assert.equal(by('zbt').dir, 'up');        // 0.32 → 売られすぎ
+  assert.deepEqual([r.down, r.wait, r.up, r.buy], [1, 3, 2, 0]);
+  // 条件が揃った場合
+  const r2 = C.marketSignals({ soxlRsi: 29, semiRsi: 30, spDd: 0.21, vix: 35, zbt: null, zbtFired: true, divergence: 'gone' }, s);
+  assert.deepEqual([r2.down, r2.wait, r2.up, r2.buy], [2, 0, 1, 3]);
+  // VIXが29超でも下落率が8%未満なら該当しない
+  assert.equal(C.marketSignals({ vix: 30, spDd: 0.05 }, s).items[0].dir, null);
+  // 未入力・未取得は判定しない
+  assert.deepEqual([C.marketSignals({}, s).down, C.marketSignals({}, s).up], [0, 0]);
+});
+
+test('相場環境: 高値からの下落率と週キー', () => {
+  const d = C.drawdownFromHigh([{ date: '2026-10-06', close: 600 }, { date: '2026-11-20', close: 530.28 }]);
+  assert.equal(d.highDate, '2026-10-06'); near(d.dd, 0.1162, 1e-9);
+  assert.equal(C.drawdownFromHigh([]), null);
+  assert.equal(C.isoWeekKey(new Date(2026, 10, 22)), '2026-W47');
+  assert.equal(C.isoWeekKey(new Date(2026, 10, 23)), '2026-W48');
+  // 復元時の検証
+  const st = C.sanitizeState({ settings: S(), entries: [], envManual: { vix: '<x>', zbt: 0.32, divergence: 'evil' }, checklist: { week: '<b>', items: { rsi: true, '<x>': true } } });
+  assert.equal(st.envManual.vix, null); assert.equal(st.envManual.zbt, 0.32); assert.equal(st.envManual.divergence, null);
+  assert.equal(st.checklist.week, null); assert.deepEqual(st.checklist.items, { rsi: true });
+});

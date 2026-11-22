@@ -14,7 +14,9 @@
       version: 1, settings: C.defaultSettings(), entries: [], touches: [], touchFlags: {},
       notifs: [], notifKeys: {}, audit: [],
       manual: { price: null, priceAt: null, applied: null, appliedAt: null, market: null, marketAt: null, rsi: null, rsiAt: null },
-      cache: { quote: null, fx: null, weekly: null },
+      cache: { quote: null, fx: null, weekly: null, market: null },
+      envManual: { vix: null, vixAt: null, zbt: null, zbtFired: false, zbtAt: null, divergence: null, divAt: null },
+      checklist: { week: null, items: {} },
     };
   }
   function load() {
@@ -103,6 +105,7 @@
         headers: S.settings.appToken ? { 'X-App-Token': S.settings.appToken } : {}, signal: ctl.signal, cache: 'no-store',
       });
       const j = await r.json().catch(() => ({}));
+      if (r.status === 404 && kind === 'market') throw new Error('Workerが古い版です。最新の worker.js をCloudflareに貼り直してください');
       if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
       return j;
     } catch (e) {
@@ -129,6 +132,8 @@
     refresh('quote', force); refresh('fx', force);
     const w = S.cache.weekly;
     if (force || !w || Date.now() - (w.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('weekly', force);
+    const mk = S.cache.market;
+    if (force || !mk || Date.now() - (mk.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('market', force);
   }
   let timers = [];
   function schedule() {
@@ -138,6 +143,7 @@
     timers.push(setInterval(() => !document.hidden && refresh('quote'), Math.max(10, s.refreshSecQuote) * 1000));
     timers.push(setInterval(() => !document.hidden && refresh('fx'), Math.max(30, s.refreshSecFx) * 1000));
     timers.push(setInterval(() => !document.hidden && refresh('weekly'), Math.max(15, s.refreshMinRsi) * 60000));
+    timers.push(setInterval(() => !document.hidden && refresh('market'), Math.max(15, s.refreshMinRsi) * 60000));
     timers.push(setInterval(() => !document.hidden && tick(), 15000)); // 鮮度表示の更新
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(false); });
@@ -188,7 +194,17 @@
     else if (!price.usable) calcBlocked = '株価が利用できないため計算を停止しています' + (price.reason ? `（${price.reason}）` : '');
     else if (!fxUsable) calcBlocked = '為替レートが利用できないため計算を停止しています' + (fx.reason ? `（${fx.reason}）` : '');
     else calc = C.maxShares(ps.available, price.value, fxForCalc, s);
-    return { price, fx, fxForCalc, rsi, ps, cond, disp, calc, calcBlocked };
+    // --- 相場環境（参考） ---
+    const mk = S.cache.market || {};
+    const spDdInfo = mk.spy ? C.drawdownFromHigh(mk.spy) : null;
+    const semi = mk.soxx && mk.soxx.length ? C.weeklyRsi(mk.soxx, s.rsiPeriod, nowNyIso()) : null;
+    const em = S.envManual;
+    const env = {
+      spDdInfo, semi, fetchedAt: mk.fetchedAt || null, error: live.errors.market || mk.spyError || mk.soxxError || null,
+      signals: C.marketSignals({ soxlRsi: rsi.confirmed, semiRsi: semi ? semi.confirmed : null, spDd: spDdInfo ? spDdInfo.dd : null,
+        vix: em.vix, zbt: em.zbt, zbtFired: em.zbtFired, divergence: em.divergence }, s),
+    };
+    return { price, fx, fxForCalc, rsi, ps, cond, disp, calc, calcBlocked, env };
   }
 
   // ================= 通知 =================
@@ -358,6 +374,8 @@
       <dt>累計株数 / 平均取得単価</dt><dd>${ps.totalShares}株 / ${usd(ps.avgUsd, 4)}</dd></dl>
       <div class="bar"><i style="width:${(ps.usageRate * 100).toFixed(1)}%"></i></div><div class="sub">予算消化率 ${pct(ps.usageRate, 1)}</div></div>`;
 
+    const envCard = envOverview(cur.env);
+    const checkCard = weekendChecklist(cur);
     const notifs = S.notifs.slice(0, 5);
     const notifCard = notifs.length ? `<div class="card"><h2>最近の通知</h2>${notifs.map(n => `<div class="notif"><b>${esc(n.title)}</b><div class="sub">${jst(n.at)}　${esc(n.body)}</div></div>`).join('')}</div>` : '';
 
@@ -365,12 +383,19 @@
     main.innerHTML = `<div class="dash">${alerts.length ? `<div class="a-alerts">${alerts.join('')}</div>` : ''}
       <div class="a-status">${statusHtml}</div><div class="a-market">${marketCard}</div>
       <div class="a-calc">${calcHtml}</div><div class="a-budget">${budgetCard}</div>
+      <div class="a-env">${envCard}</div><div class="a-check">${checkCard}</div>
       <div class="a-plan wide-only">${planCard}</div>${notifCard ? `<div class="a-notif">${notifCard}</div>` : ''}</div>` +
       `<div class="note" style="text-align:center">自動発注は行いません。データ: ${esc((S.cache.quote && S.cache.quote.source) || '—')} / ${esc((S.cache.fx && S.cache.fx.source) || '—')}</div>`;
     $('#btnManual')?.addEventListener('click', openManual);
     $('#btnClearManual')?.addEventListener('click', () => { S.manual = { ...S.manual, price: null, applied: null, market: null, rsi: null, rsiAt: null }; save(); tick(); });
     $('#btnBuy')?.addEventListener('click', () => openBuy(cur));
     $('#btnSkip')?.addEventListener('click', openSkip);
+    $('#btnEnv')?.addEventListener('click', openEnvInput);
+    main.querySelectorAll('[data-check]').forEach(cb => cb.addEventListener('change', () => {
+      const wk = C.isoWeekKey(new Date());
+      if (S.checklist.week !== wk) S.checklist = { week: wk, items: {} };
+      S.checklist.items[cb.dataset.check] = cb.checked; save();
+    }));
   }
 
   /** 5段階の全体像（広い画面用）。目標価格は直前の実約定価格からの連鎖による参考値 */
@@ -399,6 +424,72 @@
     }).join('');
     return `<div class="card"><h2>購入計画の全体像</h2><div class="tbl"><table class="plan"><thead><tr><th>回</th><th>条件</th><th>目標 / 約定価格</th><th>基本枠</th><th>状況</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="note">次回より先の目標価格は、各回が目標価格ちょうどで約定した場合の参考値です。実際の目標は直前の約定価格で決まります。</div></div>`;
+  }
+
+  /** 相場環境（参考指標）: 資料「VIXとSOXL」（2026年11月）のシグナル一覧 */
+  function envOverview(env) {
+    const s = S.settings, em = S.envManual, sg = env.signals;
+    const dirBadge = d => d === 'down' ? badge('error', '下落継続') : d === 'wait' ? badge('closed', '待ち') : d === 'up' ? badge('live', '反発') : d === 'buy' ? badge('manual', '買い条件') : '<span class="muted">—</span>';
+    const fmt = it => {
+      if (it.key === 'spdd') return env.spDdInfo ? '−' + pct(env.spDdInfo.dd, 2) : '—';
+      if (it.key === 'soxlrsi' || it.key === 'semirsi') return it.value != null ? num(it.value, 1) : '—';
+      if (it.key === 'vix') return em.vix != null ? num(em.vix, 2) : '—';
+      if (it.key === 'zbt') return em.zbtFired ? '発動' : em.zbt != null ? num(em.zbt, 2) : '—';
+      return '';
+    };
+    const rows = sg.items.map(it => `<div class="envrow">
+      <div class="envname">${esc(it.label)}${it.manual ? ' <span class="sub">手入力</span>' : ''}</div>
+      <div class="envval">${fmt(it) || '—'}</div><div class="envdir">${dirBadge(it.dir)}</div>
+      <div class="envstate"><b>${esc(it.state)}</b>　<span class="sub">判断ライン：${esc(it.line)}</span></div></div>`).join('');
+    const sp = env.spDdInfo;
+    const semiTxt = env.semi && env.semi.provisional != null ? `（暫定 ${num(env.semi.provisional, 1)}）` : '';
+    const manualAt = [em.vixAt, em.zbtAt, em.divAt].filter(Boolean);
+    return `<div class="card"><h2>相場環境（参考指標）</h2>
+      <div class="sub" style="margin-bottom:8px">下落継続 <b>${sg.down}</b>　待ち <b>${sg.wait}</b>　反発 <b>${sg.up}</b>　買い条件 <b>${sg.buy}</b></div>
+      ${env.error ? `<div class="alert warn">${esc(env.error)}</div>` : ''}
+      <div class="envlist">${rows}</div>
+      <div class="note">${sp ? `SPYの高値 ${usd(sp.high)}（${esc(sp.highDate)}）→ ${usd(sp.last)}（${esc(sp.lastDate)}）。` : ''}半導体RSIはSOXX（SOX指数の代替）${semiTxt}。
+        自動取得 ${env.fetchedAt ? jst(env.fetchedAt) : '—'}${manualAt.length ? `／手入力 ${jst(Math.max(...manualAt))}` : ''}。<br>
+        資料「VIXとSOXL：2つの話を合わせた相場の見方（2026年11月）」の見方を整理したもので、購入条件には使いません。投資助言ではありません。</div>
+      <div class="btns"><button class="b" id="btnEnv">VIX・ZBT・ダイバージェンスを入力</button></div></div>`;
+  }
+
+  const CHECK_ITEMS = [
+    ['rsi', 'SOXLの週足RSIが週末の確定値で30に入ったか'],
+    ['spdd', 'S&P500の高値（10月6日）からの下落率が20%に近づいているか'],
+    ['sox', 'SOX指数の週足RSIが30付近まで来ているか'],
+    ['div', 'SOXL日足の強気ダイバージェンスが崩れた（安値を深く更新した）か'],
+    ['zbt', 'ZBTが発動したか'],
+    ['cash', 'シグナル点灯時に投入する資金を用意できているか'],
+  ];
+  function weekendChecklist(cur) {
+    const wk = C.isoWeekKey(new Date());
+    const items = S.checklist.week === wk ? S.checklist.items : {};
+    const done = CHECK_ITEMS.filter(([k]) => items[k]).length;
+    return `<div class="card"><h2>週末チェックリスト（${esc(wk)}）</h2>
+      <div class="sub">毎日見る必要はなく、週末に確認すれば十分です。チェックは毎週リセットされます。（${done}/${CHECK_ITEMS.length}）</div>
+      ${CHECK_ITEMS.map(([k, t]) => `<label class="chk"><input type="checkbox" data-check="${k}" ${items[k] ? 'checked' : ''}><span>${esc(t)}</span></label>`).join('')}
+      <div class="note">保有中でも、資料の話し手の答えは「下落の底で投入する資金を貯めておく」です。</div></div>`;
+  }
+
+  function openEnvInput() {
+    const em = S.envManual;
+    openDialog(`<h3 style="margin-top:0">参考指標の入力</h3>
+      <div class="sub">自動取得できない指標です。チャートや動画で確認した値を入れてください。空欄はそのまま（未入力）になります。</div>
+      ${field('vix', 'VIX', em.vix ?? '', 'inputmode="decimal"')}
+      ${field('zbt', 'ZBT インジケーターの値', em.zbt ?? '', 'inputmode="decimal"')}
+      <label class="f"><input type="checkbox" name="zbtFired" ${em.zbtFired ? 'checked' : ''} style="width:auto"> ZBTが発動した</label>
+      <label class="f">SOXL 日足の強気ダイバージェンス</label>
+      <select name="divergence"><option value="">未入力</option>${[['active', '発生中'], ['gone', '消滅（安値を深く更新）'], ['none', 'なし']].map(([v, t]) => `<option value="${v}" ${em.divergence === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`, fd => {
+      const n = v => v === '' ? null : Number(v);
+      if ((fd.vix !== '' && !(Number(fd.vix) >= 0)) || (fd.zbt !== '' && !(Number(fd.zbt) >= 0))) throw new Error('数値を入力してください');
+      const now = Date.now();
+      S.envManual = {
+        vix: n(fd.vix), vixAt: fd.vix !== '' ? now : null, zbt: n(fd.zbt), zbtFired: fd.zbtFired === 'on', zbtAt: (fd.zbt !== '' || fd.zbtFired === 'on') ? now : null,
+        divergence: ['active', 'gone', 'none'].includes(fd.divergence) ? fd.divergence : null, divAt: fd.divergence ? now : null,
+      };
+      save(); tick();
+    });
   }
 
   // ---------- ダイアログ ----------
@@ -555,6 +646,7 @@
     ['fxSpreadYen', '円貨決済の為替スプレッド（円/ドル）', 1], ['otherCostYen', 'その他費用（円/注文）', 1],
     ['priceBufferPct', '価格バッファ（%・成行の上振れ対策）', 1],
     ['staleMinutesOpen', '株価の鮮度上限（分・取引時間中）', 1], ['staleMinutesFx', '為替の鮮度上限（分）', 1],
+    ['envVixLine', '参考：VIXの判断ライン', 1], ['envBuyZoneDdPct', '参考：SOXL買い場とするS&P500下落率（%）', 1], ['envSemiRsiLine', '参考：半導体週足RSIの底の目安', 1],
     ['refreshSecQuote', '株価の自動更新間隔（秒）', 1], ['refreshSecFx', '為替の自動更新間隔（秒）', 1], ['refreshMinRsi', '週足の更新間隔（分）', 1],
   ];
   function renderSettings() {
@@ -627,8 +719,8 @@
       const saved = { u: S.settings.workerUrl, t: S.settings.appToken };
       S.settings.workerUrl = url; S.settings.appToken = tok;
       const res = [];
-      for (const k of ['quote', 'fx', 'weekly']) {
-        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : j.bars.length + '週分'}`); }
+      for (const k of ['quote', 'fx', 'weekly', 'market']) {
+        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : k === 'market' ? `SPY ${j.spy ? j.spy.length + '日分' : '✗'}・SOXX ${j.soxx ? j.soxx.length + '週分' : '✗'}` : j.bars.length + '週分'}`); }
         catch (e) { res.push(`✗ ${k}: ${e.message}`); }
       }
       S.settings.workerUrl = saved.u; S.settings.appToken = saved.t;

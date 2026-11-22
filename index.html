@@ -81,6 +81,13 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 .notif{font-size:13px;padding:8px 0;border-bottom:1px solid var(--line)}
 .notif:last-child{border:0}
 .wide-only{display:none}
+label.chk{display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px;cursor:pointer}
+label.chk:last-of-type{border-bottom:0}
+label.chk input{width:20px;height:20px;flex:none;margin-top:1px;accent-color:var(--accent)}
+.envrow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:2px 10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.envrow:last-child{border-bottom:0}
+.envname{font-size:14px}.envval{font-family:var(--mono);font-weight:700;text-align:right}
+.envstate{grid-column:1/-1;font-size:13px;color:var(--text)}.envstate b{font-weight:600}
 table.plan tr.cur td{background:rgba(79,140,255,.08)}
 table.plan td{vertical-align:top}
 
@@ -111,11 +118,11 @@ table.plan td{vertical-align:top}
   .wide-only{display:block}
   .dash{display:grid;gap:16px;align-items:start;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
-    grid-template-areas:"alerts alerts" "status calc" "market calc" "budget calc" "plan plan" "notif notif"}
+    grid-template-areas:"alerts alerts" "status calc" "market calc" "budget calc" "env env" "plan plan" "check notif"}
   .dash .card,.dash .status{margin-bottom:0}
   .dash .alert{margin-bottom:8px}
   .a-alerts{grid-area:alerts}.a-status{grid-area:status}.a-market{grid-area:market}.a-calc{grid-area:calc}
-  .a-budget{grid-area:budget}.a-plan{grid-area:plan}.a-notif{grid-area:notif}
+  .a-budget{grid-area:budget}.a-plan{grid-area:plan}.a-notif{grid-area:notif}.a-env{grid-area:env}.a-check{grid-area:check}
   .a-calc .card{position:sticky;top:84px}
   .set-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start;grid-template-rows:auto 1fr;grid-template-areas:"stage fee" "data fee"}
   .set-grid .card{margin-bottom:0}
@@ -127,7 +134,7 @@ table.plan td{vertical-align:top}
 /* ===== 大画面（幅1440px以上）: 3列 ===== */
 @media (min-width:1440px){
   .dash{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr);
-    grid-template-areas:"alerts alerts alerts" "status market calc" "plan plan calc" "budget notif calc"}
+    grid-template-areas:"alerts alerts alerts" "status market calc" "env env calc" "plan plan calc" "budget check calc" "notif notif calc"}
 }
 </style>
 </head>

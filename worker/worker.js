@@ -11,9 +11,10 @@
  *   GET /api/quote   SOXL最新価格  (キャッシュ15秒)
  *   GET /api/fx      USD/JPY       (キャッシュ60秒)
  *   GET /api/weekly  SOXL週足      (キャッシュ1時間)
+ *   GET /api/market  相場環境：SPY日足・SOXX週足 (キャッシュ1時間)
  */
 
-const TTL = { quote: 15, fx: 60, weekly: 3600 };
+const TTL = { quote: 15, fx: 60, weekly: 3600, market: 3600 };
 
 export default {
   async fetch(req, env, ctx) {
@@ -46,7 +47,7 @@ export default {
       return json({ ...body, cached: true }, 200, cors);
     }
     try {
-      const body = kind === 'quote' ? await getQuote(env) : kind === 'fx' ? await getFx(env) : await getWeekly(env);
+      const body = kind === 'quote' ? await getQuote(env) : kind === 'fx' ? await getFx(env) : kind === 'market' ? await getMarket(env) : await getWeekly(env);
       body.fetchedAt = Date.now();
       ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(body), {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${TTL[kind]}` },
@@ -126,4 +127,19 @@ async function getWeekly(env) {
   const t = await twelve(env, 'time_series?symbol=SOXL&interval=1week&outputsize=120&order=ASC');
   const bars = (t.values || []).map(v => ({ date: v.datetime.slice(0, 10), close: Number(v.close) }));
   return { source: 'Twelve Data', bars };
+}
+
+/** 相場環境（参考）: S&P500の代わりにSPY日足（高値からの下落率）、SOX指数の代わりにSOXX週足（RSI） */
+async function getMarket(env) {
+  const bars = t => (t.values || []).map(v => ({ date: v.datetime.slice(0, 10), close: Number(v.close) }));
+  const [spy, soxx] = await Promise.allSettled([
+    twelve(env, 'time_series?symbol=SPY&interval=1day&outputsize=300&order=ASC'),
+    twelve(env, 'time_series?symbol=SOXX&interval=1week&outputsize=120&order=ASC'),
+  ]);
+  if (spy.status === 'rejected' && soxx.status === 'rejected') throw spy.reason;
+  return {
+    source: 'Twelve Data',
+    spy: spy.status === 'fulfilled' ? bars(spy.value) : null, spyError: spy.status === 'rejected' ? String(spy.reason.message || spy.reason) : null,
+    soxx: soxx.status === 'fulfilled' ? bars(soxx.value) : null, soxxError: soxx.status === 'rejected' ? String(soxx.reason.message || soxx.reason) : null,
+  };
 }
