@@ -134,7 +134,8 @@
     if (force || !w || Date.now() - (w.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('weekly', force);
     const mk = S.cache.market;
     if (force || !mk || Date.now() - (mk.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('market', force);
-    refresh('vix', force);
+    const vx = S.cache.vix;
+    if (force || !vx || Date.now() - (vx.fetchedAt || 0) > 60 * 60000) refresh('vix', force);
   }
   let timers = [];
   function schedule() {
@@ -145,7 +146,7 @@
     timers.push(setInterval(() => !document.hidden && refresh('fx'), Math.max(30, s.refreshSecFx) * 1000));
     timers.push(setInterval(() => !document.hidden && refresh('weekly'), Math.max(15, s.refreshMinRsi) * 60000));
     timers.push(setInterval(() => !document.hidden && refresh('market'), Math.max(15, s.refreshMinRsi) * 60000));
-    timers.push(setInterval(() => !document.hidden && refresh('vix'), 5 * 60000)); // 公開データへの負荷を抑えて5分ごと
+    timers.push(setInterval(() => !document.hidden && refresh('vix'), 60 * 60000)); // FREDは日次終値のため1時間ごとで十分
     timers.push(setInterval(() => !document.hidden && tick(), 15000)); // 鮮度表示の更新
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(false); });
@@ -480,7 +481,7 @@
     const em = S.envManual;
     openDialog(`<h3 style="margin-top:0">参考指標の入力</h3>
       <div class="sub">チャートや動画で確認した値を入れてください。空欄は未入力になります。</div>
-      ${field('vix', 'VIX（自動取得より新しい場合に使われます）', em.vix ?? '', 'inputmode="decimal"')}
+      ${field('vix', 'VIX（日中の値を使いたいとき。自動取得の終値より新しい場合に使われます）', em.vix ?? '', 'inputmode="decimal"')}
       ${field('zbt', 'ZBT インジケーターの値', em.zbt ?? '', 'inputmode="decimal"')}
       <label class="f"><input type="checkbox" name="zbtFired" ${em.zbtFired ? 'checked' : ''} style="width:auto"> ZBTが発動した</label>
       <label class="f">SOXL 日足の強気ダイバージェンス</label>
@@ -724,7 +725,7 @@
       S.settings.workerUrl = url; S.settings.appToken = tok;
       const res = [];
       for (const k of ['quote', 'fx', 'weekly', 'market', 'vix']) {
-        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : k === 'vix' ? `${num(j.vix, 2)}（${j.source}${j.source === 'FRED' ? '・終値 ' + j.asOf : '・約15分遅れ'}）` : k === 'market' ? `SPY ${j.spy ? j.spy.length + '日分' : '✗'}・SOXX ${j.soxx ? j.soxx.length + '週分' : '✗'}` : j.bars.length + '週分'}`); }
+        try { const j = await api(k, false); res.push(`✓ ${k}: ${k === 'quote' ? usd(j.price) + '（' + j.source + '）' : k === 'fx' ? num(j.market, 3) : k === 'vix' ? `${num(j.vix, 2)}（FRED・終値 ${j.asOf}）` : k === 'market' ? `SPY ${j.spy ? j.spy.length + '日分' : '✗'}・SOXX ${j.soxx ? j.soxx.length + '週分' : '✗'}` : j.bars.length + '週分'}`); }
         catch (e) { res.push(`✗ ${k}: ${e.message}`); }
       }
       S.settings.workerUrl = saved.u; S.settings.appToken = saved.t;

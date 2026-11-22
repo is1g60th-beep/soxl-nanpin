@@ -4,7 +4,7 @@
  * APIキーはWorkerのシークレット(環境変数)にのみ保存し、ブラウザには渡さない。
  *   FINNHUB_KEY     … SOXL株価・米国市場の開場状況（Finnhub 無料: 60回/分）
  *   TWELVEDATA_KEY  … USD/JPY・SOXL週足（Twelve Data 無料: 8回/分・800回/日）
- *   FRED_KEY        … 任意。VIXの終値（FRED: 米セントルイス連銀）。Cboeから取れないときの予備
+ *   FRED_KEY        … VIXの日次終値（FRED: 米セントルイス連銀）。未設定ならVIXは手入力のみ
  *   APP_TOKEN       … 必須。アプリ側の「アプリトークン」と同じ値（他人によるAPI枠消費を防止）
  *   ALLOWED_ORIGIN  … 例 https://<ユーザー名>.github.io （カンマ区切りで複数可）
  *
@@ -13,10 +13,10 @@
  *   GET /api/fx      USD/JPY       (キャッシュ60秒)
  *   GET /api/weekly  SOXL週足      (キャッシュ1時間)
  *   GET /api/market  相場環境：SPY日足・SOXX週足 (キャッシュ1時間)
- *   GET /api/vix     VIX：Cboe公開データ（約15分遅れ）→ 失敗時FREDの終値 (キャッシュ5分)
+ *   GET /api/vix     VIX：FREDの日次終値 (キャッシュ1時間)
  */
 
-const TTL = { quote: 15, fx: 60, weekly: 3600, market: 3600, vix: 300 };
+const TTL = { quote: 15, fx: 60, weekly: 3600, market: 3600, vix: 3600 };
 
 export default {
   async fetch(req, env, ctx) {
@@ -147,43 +147,22 @@ async function getMarket(env) {
 }
 
 /**
- * VIX（参考）
- * 1) Cboeの公開遅延データ（cboe.comの株価ページが使っている認証不要のJSON。非公式のため予告なく変わる可能性あり）
- * 2) 取れないときは FRED（米セントルイス連銀）の日次終値 VIXCLS。FREDはキーをURLで渡す方式のみ対応
+ * VIX（参考）: FRED（米セントルイス連銀）の日次終値 VIXCLS（Cboe算出）
+ * 公的機関の正式なAPI。FREDはキーをURLで渡す方式のみ対応しているため、URLに含める（サーバー間通信のみ）。
+ * ※ Cboeの公開データはサーバーからのアクセスを拒否（HTTP 403）するため使わない。
  */
 async function getVix(env) {
-  let cboeError = null;
-  try {
-    const r = await fetch('https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (soxl-nanpin personal app)', Accept: 'application/json' }, cf: { cacheTtl: 0 },
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json();
-    const d = (j && j.data) || j || {};
-    const vix = Number(d.current_price ?? d.last ?? d.close ?? d.price);
-    if (!(vix > 5 && vix < 200)) throw new Error('VIXの値を読み取れません（形式が変わった可能性）');
-    const prev = Number(d.prev_day_close ?? d.previous_close);
-    return {
-      source: 'Cboe', kind: 'delayed', vix, prevClose: prev > 0 ? prev : null,
-      changePct: prev > 0 ? (vix / prev - 1) * 100 : null,
-      asOf: String(d.last_trade_time || j.timestamp || '').slice(0, 25), asOfTz: 'ET', cboeError: null, fredError: null,
-    };
-  } catch (e) { cboeError = String(e.message || e).slice(0, 120); }
-
-  if (!env.FRED_KEY) throw new Error(`Cboeから取得できず（${cboeError}）、FRED_KEYも未設定です`);
-  try {
-    const r = await fetch(`https://api.stlouisfed.org/fred/series/observations?series_id=VIXCLS&file_type=json&sort_order=desc&limit=10&api_key=${encodeURIComponent(env.FRED_KEY)}`, { cf: { cacheTtl: 0 } });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json();
-    const obs = (j.observations || []).filter(o => o.value && o.value !== '.');
-    if (!obs.length) throw new Error('データなし');
-    const prev = obs[1] ? Number(obs[1].value) : null;
-    const vix = Number(obs[0].value);
-    return {
-      source: 'FRED', kind: 'close', vix, prevClose: prev, changePct: prev ? (vix / prev - 1) * 100 : null,
-      asOf: obs[0].date, asOfTz: null, cboeError, fredError: null,
-    };
-  } catch (e) {
-    throw new Error(`VIXを取得できません（Cboe: ${cboeError} / FRED: ${String(e.message || e).slice(0, 80)}）`);
+  if (!env.FRED_KEY) throw new Error('FRED_KEYが未設定です（Cloudflareのシークレットに登録してください）');
+  const key = String(env.FRED_KEY).trim();
+  if (!/^[a-z0-9]{32}$/.test(key)) {
+    throw new Error(`FRED_KEYの形式が違います（英小文字と数字の32文字。現在${key.length}文字${/[A-Z]/.test(key) ? '・大文字を含む' : ''}${/[^A-Za-z0-9]/.test(key) ? '・記号や全角文字を含む' : ''}）`);
   }
+  const r = await fetch(`https://api.stlouisfed.org/fred/series/observations?series_id=VIXCLS&file_type=json&sort_order=desc&limit=10&api_key=${key}`, { cf: { cacheTtl: 0 } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`FREDのエラー（HTTP ${r.status}${j.error_message ? '：' + String(j.error_message).slice(0, 120) : ''}）`);
+  const obs = (j.observations || []).filter(o => o.value && o.value !== '.');
+  if (!obs.length) throw new Error('FREDにVIXのデータがありません');
+  const vix = Number(obs[0].value);
+  const prev = obs[1] ? Number(obs[1].value) : null;
+  return { source: 'FRED', kind: 'close', vix, prevClose: prev, changePct: prev ? (vix / prev - 1) * 100 : null, asOf: obs[0].date, asOfTz: null };
 }

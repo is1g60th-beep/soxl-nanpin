@@ -15,7 +15,7 @@ globalThis.fetch = async (url, init = {}) => {
   return new Response('not mocked', { status: 500 });
 };
 const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'Content-Type': 'application/json' } });
-const env = { APP_TOKEN: 'tok123', FINNHUB_KEY: 'fk', TWELVEDATA_KEY: 'tk', FRED_KEY: 'frk', ALLOWED_ORIGIN: 'https://is1g60th-beep.github.io' };
+const env = { APP_TOKEN: 'tok123', FINNHUB_KEY: 'fk', TWELVEDATA_KEY: 'tk', FRED_KEY: 'abcdefghijklmnopqrstuvwxyz012345', ALLOWED_ORIGIN: 'https://is1g60th-beep.github.io' };
 const ctx = { waitUntil: p => p };
 const call = async (path, headers = { 'X-App-Token': 'tok123', Origin: 'https://is1g60th-beep.github.io' }) => {
   store.clear();
@@ -23,43 +23,35 @@ const call = async (path, headers = { 'X-App-Token': 'tok123', Origin: 'https://
   return { status: r.status, body: await r.json(), headers: r.headers };
 };
 
-test('VIX: Cboeから取得（約15分遅れ）', async () => {
-  routes = { 'https://cdn.cboe.com/': () => json({ timestamp: '2026-11-20 16:15:07', data: { symbol: '^VIX', current_price: 29.62, prev_day_close: 25.1, last_trade_time: '2026-11-20T16:14:59' } }) };
+const FRED_OK = () => json({ observations: [{ date: '2026-11-20', value: '29.30' }, { date: '2026-11-19', value: '.' }, { date: '2026-11-18', value: '24.10' }] });
+
+test('VIX: FREDの終値を取得（欠損日は飛ばす）', async () => {
+  routes = { 'https://api.stlouisfed.org/': FRED_OK };
+  calls.length = 0;
   const r = await call('/api/vix');
   assert.equal(r.status, 200);
-  assert.equal(r.body.source, 'Cboe'); assert.equal(r.body.vix, 29.62); assert.equal(r.body.asOf, '2026-11-20T16:14:59');
-  assert.ok(Math.abs(r.body.changePct - (29.62 / 25.1 - 1) * 100) < 1e-9);
+  assert.equal(r.body.source, 'FRED'); assert.equal(r.body.kind, 'close');
+  assert.equal(r.body.vix, 29.3); assert.equal(r.body.asOf, '2026-11-20'); assert.equal(r.body.prevClose, 24.1);
   assert.equal(r.headers.get('Access-Control-Allow-Origin'), 'https://is1g60th-beep.github.io');
+  assert.ok(calls.every(c => !c.url.includes('cboe.com')), 'Cboeは呼ばない');
 });
 
-test('VIX: Cboeが失敗・形式変更ならFREDの終値に切り替え', async () => {
-  for (const cboe of [() => new Response('', { status: 403 }), () => json({ data: { foo: 1 } })]) {
-    routes = {
-      'https://cdn.cboe.com/': cboe,
-      'https://api.stlouisfed.org/': () => json({ observations: [{ date: '2026-11-20', value: '29.30' }, { date: '2026-11-19', value: '.' }, { date: '2026-11-18', value: '24.10' }] }),
-    };
-    const r = await call('/api/vix');
-    assert.equal(r.status, 200);
-    assert.equal(r.body.source, 'FRED'); assert.equal(r.body.kind, 'close');
-    assert.equal(r.body.vix, 29.3); assert.equal(r.body.asOf, '2026-11-20'); assert.equal(r.body.prevClose, 24.1);
-    assert.ok(r.body.cboeError);
-  }
-});
-
-test('VIX: 両方失敗すると原因つきエラー（CORSヘッダーは付く）', async () => {
-  routes = { 'https://cdn.cboe.com/': () => new Response('', { status: 403 }), 'https://api.stlouisfed.org/': () => new Response('', { status: 400 }) };
+test('VIX: FREDのエラー内容をそのまま表示', async () => {
+  routes = { 'https://api.stlouisfed.org/': () => json({ error_code: 400, error_message: 'Bad Request.  The value for variable api_key is not registered.' }, 400) };
   const r = await call('/api/vix');
   assert.equal(r.status, 502);
-  assert.match(r.body.error, /Cboe: HTTP 403/); assert.match(r.body.error, /FRED: HTTP 400/);
+  assert.match(r.body.error, /FREDのエラー（HTTP 400：Bad Request.+not registered/);
   assert.ok(r.headers.get('Access-Control-Allow-Origin'));
 });
 
-test('VIX: FRED_KEY未設定でCboe失敗', async () => {
-  routes = { 'https://cdn.cboe.com/': () => new Response('', { status: 403 }) };
-  store.clear();
-  const r = await worker.fetch(new Request('https://w.example/api/vix', { headers: { 'X-App-Token': 'tok123' } }), { ...env, FRED_KEY: undefined }, ctx);
-  const b = await r.json();
-  assert.equal(r.status, 502); assert.match(b.error, /FRED_KEYも未設定/);
+test('VIX: FRED_KEYの未設定・形式違いを、FREDに問い合わせる前に知らせる', async () => {
+  routes = { 'https://api.stlouisfed.org/': FRED_OK };
+  const run = async key => { store.clear(); calls.length = 0; const r = await worker.fetch(new Request('https://w.example/api/vix', { headers: { 'X-App-Token': 'tok123' } }), { ...env, FRED_KEY: key }, ctx); return { body: await r.json(), n: calls.length }; };
+  let x = await run(undefined); assert.match(x.body.error, /FRED_KEYが未設定/); assert.equal(x.n, 0);
+  x = await run('ABCdef'); assert.match(x.body.error, /現在6文字・大文字を含む/); assert.equal(x.n, 0);
+  x = await run('abcdefghijklmnopqrstuvwxyz01234５'); assert.match(x.body.error, /記号や全角文字を含む/);
+  // 前後の空白・改行は取り除いて使う
+  x = await run(' abcdefghijklmnopqrstuvwxyz012345\n'); assert.equal(x.body.vix, 29.3);
 });
 
 test('トークンが違えば401、外部APIは呼ばない', async () => {

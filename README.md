@@ -71,7 +71,7 @@ APIを設定しなくても、「手入力」モードで株価・為替・RSI�
 
 | 指標 | 取得方法 | 示すもの |
 |---|---|---|
-| VIX（29突破かつS&P500が8%以上下落） | 自動（Cboe約15分遅れ → 失敗時FREDの終値）／手入力も可 | 下落継続 |
+| VIX（29突破かつS&P500が8%以上下落） | 自動（FREDの日次終値）／日中の値は手入力 | 下落継続 |
 | S&P500 高値からの下落率 | 自動（SPY日足で代用） | 20%未満は「待ち」、20%で買い場の前提 |
 | SOXL 週足RSI（確定） | 自動 | 30以下で買い条件 |
 | 半導体 週足RSI | 自動（SOX指数の代わりにSOXX） | 30付近で底の目安 |
@@ -80,8 +80,9 @@ APIを設定しなくても、「手入力」モードで株価・為替・RSI�
 
 - 自動取得にはWorkerの `/api/market` を使います（Twelve Dataの利用枠を1時間に2回分消費）。**この機能を使うには、最新の `worker/worker.js` をCloudflareに貼り直してください。**
 - SPYは配当で値が下がる分があるため、S&P500指数の下落率とはわずかにずれます。SOXXはSOX指数（PHLX）ではなくNYSE半導体指数に連動するETFなので、RSIの値は資料と完全には一致しません。
-- **VIX**：Workerの `/api/vix` が、まずCboeの公開遅延データ（cboe.comの株価ページが使う認証不要のJSON。**非公式で予告なく変わる可能性あり**）を取得し、失敗したらFRED（米セントルイス連銀）の日次終値 `VIXCLS` を使います。アプリは5分ごとに取得し、手入力の値のほうが新しければ手入力を使います。取得元は画面に表示されます。
-  - FREDを使うには、https://fredaccount.stlouisfed.org で無料登録 →「API Keys」→「Request API Key」でキーを取得し、Workerのシークレット `FRED_KEY` に登録します（任意。未登録でもCboeが取れれば動きます）。
+- **VIX**：Workerの `/api/vix` が、FRED（米セントルイス連銀）の日次終値 `VIXCLS`（Cboe算出）を取得します。値は前営業日の終値で、アプリは1時間ごとに確認します。日中の値を使いたいときは手入力でき、手入力のほうが新しければ手入力を使います。取得元は画面に表示されます。
+  - Cboeの公開データは、サーバーからのアクセスを拒否（HTTP 403）するため使っていません。
+  - FREDのキーは https://fredaccount.stlouisfed.org で無料登録 →「API Keys」→「Request API Key」で取得し、Workerのシークレット `FRED_KEY` に登録します（英小文字と数字の32文字）。
 - 週末チェックリストは資料の「これから見ておくこと」6項目です。チェックは週ごとにリセットされます。
 
 ## 5-2. セキュリティ対策
@@ -102,6 +103,6 @@ APIを設定しなくても、「手入力」モードで株価・為替・RSI�
 ## 7. テスト
 
 ```
-node --test tests/core.test.js tests/worker.test.mjs   # 計算・セキュリティ・相場環境・Workerのテスト32件
+node --test tests/core.test.js tests/worker.test.mjs   # 計算・セキュリティ・相場環境・Workerのテスト31件
 pip install playwright && python3 scripts/e2e.py   # 画面の動作確認（モックAPI）
 ```
