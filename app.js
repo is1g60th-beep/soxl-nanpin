@@ -46,6 +46,7 @@
     return { ...blankState(), ...clean, cache: keepCache ? S.cache : blankState().cache };
   }
   let S = load();
+  if (S.settings.refreshSecFx < 300) S.settings.refreshSecFx = 300; // 利用上限対策（旧既定180秒）
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(S)); }
     catch (e) { toast('保存に失敗しました: ' + e.message); }
@@ -93,6 +94,19 @@
 
   // ================= データ取得 =================
   const live = { loading: {}, errors: {} };
+  /** 取得したデータの形を確認し、壊れた応答で前回の正しい値を上書きしない */
+  function validPayload(kind, j) {
+    const pos = v => typeof v === 'number' && isFinite(v) && v > 0;
+    const bars = a => Array.isArray(a) && a.every(b => b && typeof b.date === 'string' && isFinite(Number(b.close)));
+    switch (kind) {
+      case 'quote': return pos(j.price) && pos(j.ts);
+      case 'fx': return pos(j.market) && pos(j.ts);
+      case 'weekly': return bars(j.bars) && j.bars.length > 0;
+      case 'market': return (j.spy === null || bars(j.spy)) && (j.soxx === null || bars(j.soxx)) && (j.spy || j.soxx);
+      case 'vix': return pos(j.vix);
+      default: return false;
+    }
+  }
   async function api(kind, force) {
     const base = (S.settings.workerUrl || '').replace(/\/$/, '');
     if (!base) throw new Error('API中継URLが未設定です（設定画面）');
@@ -104,9 +118,10 @@
       const r = await fetch(`${base}/api/${kind}${force ? '?force=1' : ''}`, {
         headers: S.settings.appToken ? { 'X-App-Token': S.settings.appToken } : {}, signal: ctl.signal, cache: 'no-store',
       });
-      const j = await r.json().catch(() => ({}));
+      const j = await r.json().catch(() => null);
       if (r.status === 404 && (kind === 'market' || kind === 'vix')) throw new Error('Workerが古い版です。最新の worker.js をCloudflareに貼り直してください');
-      if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+      if (!r.ok || !j || j.error) throw new Error((j && j.error) || `HTTP ${r.status}${j ? '' : '（応答を読み取れません）'}`);
+      if (!validPayload(kind, j)) throw new Error('Workerの応答の形式が正しくありません');
       return j;
     } catch (e) {
       if (e.name === 'AbortError') throw new Error('タイムアウト（Workerから応答がありません）');
@@ -122,31 +137,56 @@
       S.cache[kind] = j; live.errors[kind] = null;
     } catch (e) {
       live.errors[kind] = e.message;
+      if (/429/.test(e.message)) {
+        const until = Date.now() + 15 * 60000;
+        for (const k of (TWELVE_KINDS.includes(kind) ? TWELVE_KINDS : [kind])) backoffUntil[k] = until;
+        live.errors[kind] = 'データ提供元の利用上限に達しました（HTTP 429）。15分後に自動で再試行します';
+      }
     } finally {
       live.loading[kind] = false;
       save(); tick();
     }
   }
+  /**
+   * 取得の間隔（ミリ秒）。Twelve Data無料枠（1分8回・1日800回）を超えないよう、
+   * 市場が閉まっている間は間隔を広げ、為替の週末休場中は取得しない。
+   */
+  const TWELVE_KINDS = ['fx', 'weekly', 'market'];
+  function intervalMs(kind) {
+    const s = S.settings, ny = nowNyIso();
+    const fxWeekend = C.isFxWeekend(ny), usOpen = C.isUsRegularSession(ny);
+    switch (kind) {
+      case 'quote': return Math.max(10, s.refreshSecQuote) * 1000 * (usOpen ? 1 : 10); // 休場中は10倍（Finnhubは枠に余裕あり）
+      case 'fx': return fxWeekend ? Infinity : Math.max(300, s.refreshSecFx) * 1000;
+      case 'weekly': case 'market': return (usOpen ? Math.max(30, s.refreshMinRsi) : 360) * 60000; // 休場中は6時間
+      case 'vix': return (fxWeekend ? 720 : 60) * 60000;
+      default: return 3600000;
+    }
+  }
+  const lastAttempt = {}, backoffUntil = {};
+  /** 期限が来たものだけ取得。force（更新ボタン）でも連打（株価5秒・その他20秒以内）と制限中は取得しない */
+  function refreshDue(force) {
+    if (!S.settings.workerUrl) return;
+    const now = Date.now();
+    for (const kind of ['quote', 'fx', 'weekly', 'market', 'vix']) {
+      if (backoffUntil[kind] > now) continue;
+      const c = S.cache[kind];
+      const last = Math.max(lastAttempt[kind] || 0, (c && c.fetchedAt) || 0);
+      const iv = intervalMs(kind);
+      const guard = kind === 'quote' ? 5000 : 20000; // 更新ボタンの連打対策（株価はFinnhubで枠に余裕あり）
+      const due = !c || (force ? now - (lastAttempt[kind] || 0) > guard && iv !== Infinity : now - last >= iv);
+      if (due) { lastAttempt[kind] = now; refresh(kind, false); }
+    }
+  }
   function refreshAll(force) {
     if (!S.settings.workerUrl) { toast('API中継URLが未設定のため、手入力の値で計算します'); tick(); return; }
-    refresh('quote', force); refresh('fx', force);
-    const w = S.cache.weekly;
-    if (force || !w || Date.now() - (w.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('weekly', force);
-    const mk = S.cache.market;
-    if (force || !mk || Date.now() - (mk.fetchedAt || 0) > S.settings.refreshMinRsi * 60000) refresh('market', force);
-    const vx = S.cache.vix;
-    if (force || !vx || Date.now() - (vx.fetchedAt || 0) > 60 * 60000) refresh('vix', force);
+    refreshDue(force);
   }
   let timers = [];
   function schedule() {
     timers.forEach(clearInterval); timers = [];
     if (!S.settings.workerUrl) return;
-    const s = S.settings;
-    timers.push(setInterval(() => !document.hidden && refresh('quote'), Math.max(10, s.refreshSecQuote) * 1000));
-    timers.push(setInterval(() => !document.hidden && refresh('fx'), Math.max(30, s.refreshSecFx) * 1000));
-    timers.push(setInterval(() => !document.hidden && refresh('weekly'), Math.max(15, s.refreshMinRsi) * 60000));
-    timers.push(setInterval(() => !document.hidden && refresh('market'), Math.max(15, s.refreshMinRsi) * 60000));
-    timers.push(setInterval(() => !document.hidden && refresh('vix'), 60 * 60000)); // FREDは日次終値のため1時間ごとで十分
+    timers.push(setInterval(() => !document.hidden && refreshDue(false), 10000));
     timers.push(setInterval(() => !document.hidden && tick(), 15000)); // 鮮度表示の更新
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(false); });
@@ -158,25 +198,27 @@
     // --- 株価 ---
     let price = { value: null, usable: false, code: 'error', label: '未取得', at: null, source: '' };
     const q = S.cache.quote;
-    const qf = C.quoteFreshness(live.errors.quote ? { error: live.errors.quote } : q, now, s);
+    const qf = live.errors.quote
+      ? (q && q.price > 0 ? C.quoteFreshnessOnError(q, now, s, nowNyIso(), live.errors.quote) : C.quoteFreshness({ error: live.errors.quote }, now, s))
+      : C.quoteFreshness(q, now, s);
     const manualPriceOk = m.price > 0 && (now - m.priceAt) / 60000 <= MANUAL_EXPIRE_MIN;
     if (manualPriceOk) {
       price = { value: m.price, usable: true, code: 'manual', label: '手入力', at: m.priceAt, source: '手入力' };
     } else if (q && q.price > 0) {
       const v = s.useAskIfAvailable && q.ask > 0 ? q.ask : q.price;
-      price = { value: v, usable: qf.usable, code: qf.code, label: qf.label, at: q.ts, source: q.source + (q.ask > 0 && s.useAskIfAvailable ? '（売気配）' : ''), reason: qf.reason, session: q.session, prevClose: q.prevClose, changePct: q.changePct, holiday: q.holiday };
-      if (live.errors.quote) { price.usable = false; price.code = 'error'; price.label = 'エラー'; price.reason = live.errors.quote; }
+      price = { value: v, usable: qf.usable, code: qf.code, label: qf.label, at: q.ts, source: q.source + (q.ask > 0 && s.useAskIfAvailable ? '（売気配）' : ''), reason: qf.reason, warning: qf.warning, session: q.session, prevClose: q.prevClose, changePct: q.changePct, holiday: q.holiday };
     } else if (live.errors.quote) {
       price.reason = live.errors.quote;
     }
     // --- 為替 ---
     const f = S.cache.fx;
-    const ff = C.fxFreshness(live.errors.fx ? { error: live.errors.fx } : f, now, s, nowNyIso());
+    let ff = C.fxFreshness(f && f.market > 0 ? f : (live.errors.fx ? { error: live.errors.fx } : f), now, s, nowNyIso());
+    if (live.errors.fx && f && f.market > 0) ff = ff.usable ? { ...ff, label: ff.label + '・前回値', warning: live.errors.fx } : { ...ff, reason: `${live.errors.fx}（前回値も古いため使えません）` };
     const manualMarketOk = m.market > 0 && (now - m.marketAt) / 60000 <= MANUAL_EXPIRE_MIN;
     const manualAppliedOk = m.applied > 0 && (now - m.appliedAt) / 60000 <= MANUAL_EXPIRE_MIN;
     let fx = { market: null, applied: manualAppliedOk ? m.applied : null, appliedAt: m.appliedAt, code: 'error', label: '未取得', at: null, usable: false };
     if (manualMarketOk) Object.assign(fx, { market: m.market, code: 'manual', label: '手入力', at: m.marketAt, usable: true });
-    else if (f && f.market > 0) Object.assign(fx, { market: f.market, code: ff.code, label: ff.label, at: f.ts, usable: ff.usable, reason: ff.reason, source: f.source });
+    else if (f && f.market > 0) Object.assign(fx, { market: f.market, code: ff.code, label: ff.label, at: f.ts, usable: ff.usable, reason: ff.reason, warning: ff.warning, source: f.source });
     else if (live.errors.fx) fx.reason = live.errors.fx;
     const fxForCalc = { market: fx.usable ? (manualMarketOk ? m.market : f && f.market) : null, applied: fx.applied };
     const fxUsable = fxForCalc.applied > 0 || fxForCalc.market > 0;
@@ -291,6 +333,9 @@
     if (price.code === 'error' && price.reason && s.workerUrl) alerts.push(`<div class="alert err">株価取得エラー：${esc(price.reason)}</div>`);
     if (price.code === 'stale') alerts.push(`<div class="alert err">${esc(price.reason)}。この価格では計算しません。</div>`);
     if (fx.code === 'error' && fx.reason && s.workerUrl) alerts.push(`<div class="alert err">為替取得エラー：${esc(fx.reason)}</div>`);
+    if (price.warning) alerts.push(`<div class="alert warn">株価の取得に失敗したため、前回の値（${jst(price.at)}）で計算しています：${esc(price.warning)}</div>`);
+    if (fx.warning) alerts.push(`<div class="alert warn">為替の取得に失敗したため、前回の値（${jst(fx.at)}）で計算しています：${esc(fx.warning)}</div>`);
+    if (fx.code === 'stale' && fx.reason) alerts.push(`<div class="alert err">為替：${esc(fx.reason)}</div>`);
 
     // 状態カード
     let statusHtml;

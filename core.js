@@ -35,7 +35,7 @@
       staleMinutesOpen: 5,   // 取引時間中、これより古い株価は計算に使わない
       staleMinutesFx: 30,    // これより古い為替レートは計算に使わない
       refreshSecQuote: 30,
-      refreshSecFx: 180,
+      refreshSecFx: 300,
       refreshMinRsi: 60,
       workerUrl: '',
       // 相場環境（参考指標）の判断ライン。購入条件には使わない
@@ -304,6 +304,28 @@
     return (dow === 5 && hour >= 17) || dow === 6 || (dow === 0 && hour < 17);
   }
 
+  /** 米国株の通常取引時間か（NY時間 平日9:30〜16:00。祝日は考慮しない＝安全側） */
+  function isUsRegularSession(nowNyIso) {
+    if (!nowNyIso) return false;
+    const dow = new Date(nowNyIso.slice(0, 10) + 'T00:00:00Z').getUTCDay();
+    const t = Number(nowNyIso.slice(11, 13)) * 60 + Number(nowNyIso.slice(14, 16));
+    return dow >= 1 && dow <= 5 && t >= 570 && t < 960;
+  }
+
+  /**
+   * 取得に失敗したとき、前回取得した株価を使ってよいか。
+   * 前回が「休場」だった値でも、現在が通常取引時間なら古い値として扱い使わない。
+   */
+  function quoteFreshnessOnError(quote, nowMs, s, nowNyIso, error) {
+    const f = quoteFreshness(quote, nowMs, s);
+    if (!f.usable) return { ...f, reason: `${error}（前回値も古いため使えません）` };
+    const ageMin = (nowMs - quote.ts) / 60000;
+    if (isUsRegularSession(nowNyIso) && ageMin > s.staleMinutesOpen) {
+      return { label: '更新停止', code: 'stale', usable: false, ageMin, reason: `${error}。取引時間中のため前回値（${Math.round(ageMin)}分前）は使いません` };
+    }
+    return { ...f, label: f.label + '・前回値', warning: error };
+  }
+
   function fxFreshness(fx, nowMs, s, nowNyIso) {
     if (!fx || fx.error) return { label: 'エラー', code: 'error', usable: false, reason: fx && fx.error ? fx.error : '未取得' };
     if (!(fx.market > 0) || !fx.ts) return { label: 'エラー', code: 'error', usable: false, reason: 'レートなし' };
@@ -567,7 +589,7 @@
     sanitizeState, sanitizeSettings, exportState, stripSecrets, drawdownFromHigh, marketSignals, isoWeekKey, pickVix,
     defaultSettings, roundTo, commissionUsd, appliedRate, estimate, maxShares,
     planStatus, targetPrice, projectedTargets, evaluateCondition, updateTouchHistory, displayCondition,
-    rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, fxFreshness, isFxWeekend,
+    rsiWilder, weeklyRsi, isWeekStillForming, quoteFreshness, quoteFreshnessOnError, fxFreshness, isFxWeekend, isUsRegularSession,
     buildBuyEntry, buildSkipEntry, activeEntries, toCsv,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Core;

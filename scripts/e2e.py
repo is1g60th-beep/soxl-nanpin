@@ -59,20 +59,25 @@ with sync_playwright() as p:
 
     # 4) 18ドルまで下落 → 到達
     state['price'] = 17.95
-    pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
+    pg.wait_for_timeout(5200); pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
     txt = pg.inner_text('main')
     assert '購入条件 到達' in txt, txt[:600]
     pg.screenshot(path=f'{OUT}/03_stage2_hit.png', full_page=True)
 
     # 5) 反発 → 履歴は残る
     state['price'] = 18.6
-    pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
+    pg.wait_for_timeout(5200); pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
     txt = pg.inner_text('main')
     assert '一度到達→反発' in txt, txt[:600]
 
-    # 6) 株価API停止 → 計算停止
+    # 6) 株価API停止: 直前の値が新しければ警告つきで継続
     state['fail_quote'] = True
-    pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
+    pg.wait_for_timeout(5200); pg.click('#btnRefresh'); pg.wait_for_timeout(1000)
+    txt = pg.inner_text('main')
+    assert '前回の値' in txt and '計算を停止' not in txt, txt[:800]
+    # 前回値が古い（取引時間中に10分前）→ 計算停止
+    pg.evaluate("""() => { const s = JSON.parse(localStorage.getItem('soxl-nanpin-v1')); s.cache.quote.ts = Date.now() - 10*60000; localStorage.setItem('soxl-nanpin-v1', JSON.stringify(s)); }""")
+    pg.reload(); pg.wait_for_timeout(1200)
     txt = pg.inner_text('main')
     assert '計算を停止' in txt, txt[:800]
     pg.screenshot(path=f'{OUT}/04_api_error.png', full_page=True)

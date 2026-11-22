@@ -320,3 +320,24 @@ test('為替: 週末休場中は「更新停止」にせず計算を続ける', 
   // 休場中でも3日以上前の値は使わない
   assert.equal(C.fxFreshness({ market: 158, ts: now - 80 * 3600000 }, now, s, '2026-11-22T09:33').usable, false);
 });
+
+test('取得失敗時: 鮮度条件を満たす前回値だけ使う', () => {
+  const s = S(), now = Date.now();
+  // 週末（休場）に取得失敗 → 前回値で継続
+  const q = { price: 30.88, ts: now - 2 * 86400000, isOpen: false, session: null };
+  let f = C.quoteFreshnessOnError(q, now, s, '2026-11-22T10:00', 'HTTP 429');
+  assert.equal(f.usable, true); assert.match(f.label, /前回値/); assert.equal(f.warning, 'HTTP 429');
+  // 取引時間中（月曜10:00 NY）に、休場中に取れた古い値しかない → 使わない
+  f = C.quoteFreshnessOnError(q, now, s, '2026-11-23T10:00', 'HTTP 429');
+  assert.equal(f.usable, false); assert.equal(f.code, 'stale');
+  // 取引時間中でも3分前の値なら使う
+  f = C.quoteFreshnessOnError({ price: 30, ts: now - 3 * 60000, isOpen: true, session: 'regular' }, now, s, '2026-11-23T10:00', 'HTTP 429');
+  assert.equal(f.usable, true);
+  // 通常取引時間の判定（祝日は考慮しない＝安全側）
+  assert.equal(C.isUsRegularSession('2026-11-23T09:29'), false);
+  assert.equal(C.isUsRegularSession('2026-11-23T09:30'), true);
+  assert.equal(C.isUsRegularSession('2026-11-23T15:59'), true);
+  assert.equal(C.isUsRegularSession('2026-11-23T16:00'), false);
+  assert.equal(C.isUsRegularSession('2026-11-22T12:00'), false);
+  assert.equal(S().refreshSecFx, 300);
+});
