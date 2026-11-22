@@ -1,5 +1,5 @@
 // オフラインでも画面と保存データを開けるようにする。価格データ(API)はキャッシュしない。
-const VERSION = 'soxl-nanpin-v1.1.1';
+const VERSION = 'soxl-nanpin-v1.2.0';
 const ASSETS = ['./', 'index.html', 'core.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

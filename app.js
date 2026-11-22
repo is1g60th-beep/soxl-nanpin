@@ -361,12 +361,44 @@
     const notifs = S.notifs.slice(0, 5);
     const notifCard = notifs.length ? `<div class="card"><h2>最近の通知</h2>${notifs.map(n => `<div class="notif"><b>${esc(n.title)}</b><div class="sub">${jst(n.at)}　${esc(n.body)}</div></div>`).join('')}</div>` : '';
 
-    main.innerHTML = alerts.join('') + statusHtml + marketCard + calcHtml + budgetCard + notifCard +
+    const planCard = planOverview(ps, cond);
+    main.innerHTML = `<div class="dash">${alerts.length ? `<div class="a-alerts">${alerts.join('')}</div>` : ''}
+      <div class="a-status">${statusHtml}</div><div class="a-market">${marketCard}</div>
+      <div class="a-calc">${calcHtml}</div><div class="a-budget">${budgetCard}</div>
+      <div class="a-plan wide-only">${planCard}</div>${notifCard ? `<div class="a-notif">${notifCard}</div>` : ''}</div>` +
       `<div class="note" style="text-align:center">自動発注は行いません。データ: ${esc((S.cache.quote && S.cache.quote.source) || '—')} / ${esc((S.cache.fx && S.cache.fx.source) || '—')}</div>`;
     $('#btnManual')?.addEventListener('click', openManual);
     $('#btnClearManual')?.addEventListener('click', () => { S.manual = { ...S.manual, price: null, applied: null, market: null, rsi: null, rsiAt: null }; save(); tick(); });
     $('#btnBuy')?.addEventListener('click', () => openBuy(cur));
     $('#btnSkip')?.addEventListener('click', openSkip);
+  }
+
+  /** 5段階の全体像（広い画面用）。目標価格は直前の実約定価格からの連鎖による参考値 */
+  function planOverview(ps, cond) {
+    const s = S.settings, entries = C.activeEntries(S);
+    // 確定済みの各回の基準価格を使い、未到達の回は直前の約定価格から連鎖で試算
+    let ref = null;
+    const rows = s.stages.map((st, i) => {
+      const e = entries[i];
+      let cond2, target = null, state;
+      if (st.type === 'rsi') cond2 = `週足RSI ≤ ${s.rsiThreshold}`;
+      else { cond2 = `-${(st.drop * 100).toFixed(1)}%`; target = ref != null ? ref * (1 - st.drop) : null; }
+      if (e && e.kind === 'buy') {
+        state = `<span class="badge b-live">購入 ${esc(e.shares)}株</span>`;
+        ref = e.fillPrice; // 実約定価格が次の基準
+      } else if (e) {
+        state = '<span class="badge b-closed">見送り</span>'; // 基準は直前の約定価格のまま
+      } else {
+        state = i === ps.nextStage ? (cond.met ? '<span class="badge b-error">条件到達</span>' : '<span class="badge b-manual">監視中</span>') : '<span class="muted">未到達</span>';
+        if (target != null) ref = target; // 先の回は「目標価格で約定した」と仮定して連鎖
+      }
+      const tgt = st.type === 'rsi' ? (e && e.kind === 'buy' ? usd(e.fillPrice, 2) + '<div class="sub">約定</div>' : '—')
+        : e && e.kind === 'buy' ? usd(e.fillPrice, 4) + `<div class="sub">約定（目標 ${usd(target, 4)}）</div>`
+        : target != null ? usd(target, 4) + (i > ps.nextStage ? '<div class="sub">試算</div>' : '') : '<span class="muted">初回約定後</span>';
+      return `<tr class="${i === ps.nextStage ? 'cur' : ''}"><td>${esc(st.name)}</td><td>${cond2}</td><td>${tgt}</td><td>${yen(st.alloc)}</td><td>${state}</td></tr>`;
+    }).join('');
+    return `<div class="card"><h2>購入計画の全体像</h2><div class="tbl"><table class="plan"><thead><tr><th>回</th><th>条件</th><th>目標 / 約定価格</th><th>基本枠</th><th>状況</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="note">次回より先の目標価格は、各回が目標価格ちょうどで約定した場合の参考値です。実際の目標は直前の約定価格で決まります。</div></div>`;
   }
 
   // ---------- ダイアログ ----------
@@ -450,9 +482,9 @@
         <dt>累計約定代金</dt><dd>${usd(ps.totalUsd)}</dd><dt>累計手数料</dt><dd>${usd(ps.totalFeeUsd)}</dd>
         <dt>累計受渡金額</dt><dd>${yen(ps.paid)}</dd></dl>
       ${entries.length ? '<div class="btns"><button class="b danger" id="btnUndo">最新の記録を取り消す</button></div>' : ''}</div>
-      <div class="card"><h2>購入条件の到達履歴</h2>${touches ? `<div class="tbl"><table><thead><tr><th>回</th><th>到達</th><th>値</th><th>反発</th></tr></thead><tbody>${touches}</tbody></table></div>` : '<div class="muted">まだありません。</div>'}</div>
+      <div class="grid-3"><div class="card"><h2>購入条件の到達履歴</h2>${touches ? `<div class="tbl"><table><thead><tr><th>回</th><th>到達</th><th>値</th><th>反発</th></tr></thead><tbody>${touches}</tbody></table></div>` : '<div class="muted">まだありません。</div>'}</div>
       <div class="card"><h2>通知履歴</h2>${S.notifs.slice(0, 30).map(n => `<div class="notif"><b>${esc(n.title)}</b><div class="sub">${jst(n.at)}　${esc(n.body)}</div></div>`).join('') || '<div class="muted">まだありません。</div>'}</div>
-      <div class="card"><h2>変更履歴</h2>${auditRows || '<div class="muted">まだありません。</div>'}</div>`;
+      <div class="card"><h2>変更履歴</h2>${auditRows || '<div class="muted">まだありません。</div>'}</div></div>`;
     main.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openEdit(b.dataset.edit)));
     $('#btnUndo')?.addEventListener('click', () => {
       const last = C.activeEntries(S).at(-1);
@@ -500,7 +532,7 @@
       return `<tr><td>${esc(st.name)}</td><td>${st.type === 'rsi' ? `RSI≤${s.rsiThreshold}` : `-${(st.drop * 100).toFixed(1)}%`}</td><td>${yen(st.alloc)}</td><td>${e && e.kind === 'buy' ? yen(e.paidYen) : '—'}</td><td>${e ? yen(cum - paidCum) : '—'}</td><td>${status}</td></tr>`;
     }).join('');
     const allocSum = s.stages.reduce((a, x) => a + x.alloc, 0);
-    main.innerHTML = `<div class="card"><h2>予算</h2><dl class="rows">
+    main.innerHTML = `<div class="grid-2"><div class="card"><h2>予算</h2><dl class="rows">
       <dt>総予算</dt><dd>${yen(ps.totalBudget)}</dd><dt>累計使用額（受渡）</dt><dd>${yen(ps.paid)}</dd>
       <dt>累計約定代金</dt><dd>${usd(ps.totalUsd)}</dd><dt>累計手数料</dt><dd>${usd(ps.totalFeeUsd)}</dd>
       <dt class="strong">総残予算</dt><dd class="strong">${yen(ps.remainingBudget)}</dd>
@@ -512,7 +544,7 @@
       <div class="bar"><i style="width:${(ps.usageRate * 100).toFixed(1)}%"></i></div><div class="sub">予算消化率 ${pct(ps.usageRate, 1)}</div>
       ${allocSum !== s.totalBudget ? `<div class="alert warn" style="margin-top:10px">各回の投入枠合計（${yen(allocSum)}）が総予算（${yen(s.totalBudget)}）と一致していません。総予算が常に上限として優先されます。</div>` : ''}</div>
       <div class="card"><h2>各回の購入状況</h2><div class="tbl"><table><thead><tr><th>回</th><th>条件</th><th>基本枠</th><th>受渡金額</th><th>繰越</th><th>状況</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <div class="note">繰越 = それまでの基本枠合計 − 実際の受渡金額合計。見送った回の枠も次回へ繰り越されます。</div></div>`;
+      <div class="note">繰越 = それまでの基本枠合計 − 実際の受渡金額合計。見送った回の枠も次回へ繰り越されます。</div></div></div>`;
   }
 
   // ---------- 設定 ----------
@@ -531,14 +563,14 @@
       <td>${st.type === 'rsi' ? 'RSI' : `<input name="drop${i}" value="${(st.drop * 100).toFixed(2).replace(/\.?0+$/, '')}" inputmode="decimal" style="width:80px">`}</td>
       <td><input name="alloc${i}" value="${esc(st.alloc)}" inputmode="numeric" style="width:120px"></td></tr>`).join('');
     const notifState = 'Notification' in window ? Notification.permission : 'unsupported';
-    main.innerHTML = `<form id="setForm">
-      <div class="card"><h2>購入条件・投入枠</h2>
+    main.innerHTML = `<form id="setForm"><div class="set-grid">
+      <div class="card s-stage"><h2>購入条件・投入枠</h2>
         <div class="tbl"><table><thead><tr><th>回</th><th>下落率（%）</th><th>投入枠（円）</th></tr></thead><tbody>${stageRows}</tbody></table></div>
         <div class="note">②以降の下落率は「直前の実際の約定価格」からの下落率です。</div>
         <label class="f">目標到達後に反発したときの扱い</label>
         <select name="reboundMode"><option value="history" ${s.reboundMode === 'history' ? 'selected' : ''}>到達履歴を残し、現在の達成状況は別表示（推奨）</option><option value="latch" ${s.reboundMode === 'latch' ? 'selected' : ''}>購入するまで「到達」表示を維持</option></select>
       </div>
-      <div class="card"><h2>手数料・為替（楽天証券 円貨決済）</h2>
+      <div class="card s-fee"><h2>手数料・為替（楽天証券 円貨決済）</h2>
         ${SETTING_FIELDS.map(([k, label, scale]) => `<label class="f">${label}</label><input name="${k}" value="${+(s[k] * scale).toFixed(6)}" inputmode="decimal">`).join('')}
         <label class="f">手数料のセント未満</label><select name="feeRounding">${['ceil', 'floor', 'round'].map(v => `<option value="${v}" ${s.feeRounding === v ? 'selected' : ''}>${{ ceil: '切り上げ（安全側）', floor: '切り捨て', round: '四捨五入' }[v]}</option>`).join('')}</select>
         <label class="f">円換算の1円未満</label><select name="yenRounding">${['ceil', 'floor', 'round'].map(v => `<option value="${v}" ${s.yenRounding === v ? 'selected' : ''}>${{ ceil: '切り上げ（安全側）', floor: '切り捨て', round: '四捨五入' }[v]}</option>`).join('')}</select>
@@ -546,21 +578,21 @@
         <label class="f"><input type="checkbox" name="useAskIfAvailable" ${s.useAskIfAvailable ? 'checked' : ''} style="width:auto"> 売気配（Ask）が取得できる場合はAskで計算</label>
         <div class="note">初期値は2026年11月時点の楽天証券公開情報：手数料 約定代金の0.495%（税込）、最低0ドル、上限22ドル。円貨決済の為替手数料 1ドルあたり25銭。端数処理の正確な方式は未検証のため安全側（切り上げ）にしています。</div>
       </div>
-      <div class="card"><h2>データ取得（API中継）</h2>
+      <div class="card s-data"><h2>データ取得（API中継）</h2>
         <label class="f">API中継URL（Cloudflare Worker）</label><input name="workerUrl" value="${esc(s.workerUrl)}" placeholder="https://soxl-nanpin-api.xxxx.workers.dev" inputmode="url">
         <label class="f">アプリトークン（Workerの APP_TOKEN と同じ値）</label><input name="appToken" value="${esc(s.appToken || '')}" type="password" autocomplete="off">
         <div class="note">APIキー（Finnhub・Twelve Data）はWorker側のシークレットに保存し、このアプリには入力しません。株価: Finnhub（失敗時Twelve Data）/ 為替・週足RSI: Twelve Data。</div>
         <div class="btns"><button type="button" class="b" id="btnTest">接続テスト</button></div><div id="testResult" class="note"></div>
-      </div>
-      <div class="btns" style="margin-bottom:12px"><button class="b primary" type="submit">設定を保存</button><button class="b" type="button" id="btnDefaults">初期値に戻す</button></div>
+      </div></div>
+      <div class="btns savebar" style="margin-bottom:12px"><button class="b primary" type="submit">設定を保存</button><button class="b" type="button" id="btnDefaults">初期値に戻す</button></div>
     </form>
-    <div class="card"><h2>通知</h2><div class="sub">状態: ${{ granted: '許可済み', denied: '拒否（端末の設定で変更）', default: '未設定', unsupported: 'この環境では未対応' }[notifState]}</div>
+    <div class="grid-2"><div class="card"><h2>通知</h2><div class="sub">状態: ${{ granted: '許可済み', denied: '拒否（端末の設定で変更）', default: '未設定', unsupported: 'この環境では未対応' }[notifState]}</div>
       <div class="note">アプリを開いている間の通知に対応します。iPhoneはホーム画面に追加したアプリでのみ通知を許可できます。</div>
       <div class="btns"><button class="b" id="btnNotif" ${notifState !== 'default' ? 'disabled' : ''}>通知を許可</button></div></div>
     <div class="card"><h2>バックアップ</h2>
       <div class="btns"><button class="b" id="btnExport">JSONバックアップ</button><button class="b" id="btnCsv">購入履歴CSV</button><label class="b" style="cursor:pointer">JSONから復元<input type="file" id="fileImport" accept="application/json,.json" class="hidden"></label></div>
       <div class="note">自動バックアップ（直近10件・登録/編集/取消の直前）からも復元できます。</div>
-      <div class="btns"><button class="b" id="btnSnaps">自動バックアップから復元</button><button class="b danger" id="btnReset">全データを消去</button></div></div>`;
+      <div class="btns"><button class="b" id="btnSnaps">自動バックアップから復元</button><button class="b danger" id="btnReset">全データを消去</button></div></div></div>`;
     $('#setForm').addEventListener('submit', e => {
       e.preventDefault();
       const fd = new FormData(e.target);

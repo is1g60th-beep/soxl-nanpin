@@ -80,6 +80,55 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 .note{font-size:12px;color:var(--muted);margin-top:8px}
 .notif{font-size:13px;padding:8px 0;border-bottom:1px solid var(--line)}
 .notif:last-child{border:0}
+.wide-only{display:none}
+table.plan tr.cur td{background:rgba(79,140,255,.08)}
+table.plan td{vertical-align:top}
+
+/* ===== タブレット・PC（幅768px以上）: 左サイドバー ===== */
+@media (min-width:768px){
+  nav{top:0;right:auto;bottom:0;width:92px;flex-direction:column;justify-content:flex-start;gap:4px;border-top:0;border-right:1px solid var(--line);padding:calc(env(safe-area-inset-top) + 76px) 0 0}
+  nav button{flex:none;padding:12px 0;font-size:12px;border-radius:12px;margin:0 8px}
+  nav button.on{background:rgba(79,140,255,.12)}
+  nav button:hover{color:var(--text)}
+  header{margin-left:92px;padding-left:24px;padding-right:24px}
+  header h1{font-size:18px}
+  main{margin-left:92px;max-width:none;padding:20px 24px 32px}
+  main>*{max-width:1320px}
+  .card{padding:18px}
+  .big{font-size:34px}
+  button.b{cursor:pointer} button.b:hover{border-color:var(--accent)}
+  .grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+  .grid-2>.card{margin-bottom:0}
+  .grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:start}
+  .grid-3>.card{margin-bottom:0}
+  .grid-2+*,.grid-3{margin-top:16px}
+  .toast{bottom:24px;left:calc(50% + 46px)}
+  dialog{width:min(560px,90vw)}
+}
+
+/* ===== 広い画面（幅1024px以上）: ダッシュボード2列 ===== */
+@media (min-width:1024px){
+  .wide-only{display:block}
+  .dash{display:grid;gap:16px;align-items:start;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    grid-template-areas:"alerts alerts" "status calc" "market calc" "budget calc" "plan plan" "notif notif"}
+  .dash .card,.dash .status{margin-bottom:0}
+  .dash .alert{margin-bottom:8px}
+  .a-alerts{grid-area:alerts}.a-status{grid-area:status}.a-market{grid-area:market}.a-calc{grid-area:calc}
+  .a-budget{grid-area:budget}.a-plan{grid-area:plan}.a-notif{grid-area:notif}
+  .a-calc .card{position:sticky;top:84px}
+  .set-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start;grid-template-rows:auto 1fr;grid-template-areas:"stage fee" "data fee"}
+  .set-grid .card{margin-bottom:0}
+  .s-stage{grid-area:stage}.s-fee{grid-area:fee}.s-data{grid-area:data}
+  .savebar{margin-top:16px}
+  #setForm+.grid-2{margin-top:4px}
+}
+
+/* ===== 大画面（幅1440px以上）: 3列 ===== */
+@media (min-width:1440px){
+  .dash{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr);
+    grid-template-areas:"alerts alerts alerts" "status market calc" "plan plan calc" "budget notif calc"}
+}
 </style>
 </head>
 <body>
