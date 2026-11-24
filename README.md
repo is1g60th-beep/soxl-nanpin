@@ -110,5 +110,5 @@ APIを設定しなくても、「手入力」モードで株価・為替・RSI�
 
 ```
 node --test tests/core.test.js tests/worker.test.mjs   # 計算・セキュリティ・相場環境・Workerのテスト31件
-pip install playwright && python3 scripts/e2e.py   # 画面の動作確認（モックAPI）
+pip install playwright && python3 scripts/e2e.py && python3 scripts/ratelimit_test.py && python3 scripts/startup_stale_test.py   # 画面の動作確認（モックAPI）
 ```

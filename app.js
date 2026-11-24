@@ -93,7 +93,8 @@
   }
 
   // ================= データ取得 =================
-  const live = { loading: {}, errors: {} };
+  // completedAt: この起動・復帰のあとで取得が完了した時刻 / resumedAt: 起動または裏から戻った時刻
+  const live = { loading: {}, errors: {}, completedAt: {}, resumedAt: Date.now() };
   /** 取得したデータの形を確認し、壊れた応答で前回の正しい値を上書きしない */
   function validPayload(kind, j) {
     const pos = v => typeof v === 'number' && isFinite(v) && v > 0;
@@ -144,6 +145,7 @@
       }
     } finally {
       live.loading[kind] = false;
+      live.completedAt[kind] = Date.now();
       save(); tick();
     }
   }
@@ -189,7 +191,18 @@
     timers.push(setInterval(() => !document.hidden && refreshDue(false), 10000));
     timers.push(setInterval(() => !document.hidden && tick(), 15000)); // 鮮度表示の更新
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(false); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { live.resumedAt = Date.now(); refreshAll(false); } });
+  /**
+   * 起動・復帰のあと、そのデータについて最新かどうかを確かめ終えたか。
+   * 確かめる前に、端末に残っていた古い値で「更新されていない」と判定・通知しないために使う。
+   */
+  function verified(kind) {
+    if (!S.settings.workerUrl) return true;
+    const now = Date.now(), c = S.cache[kind];
+    if ((live.completedAt[kind] || 0) >= live.resumedAt) return true;      // 復帰後に取得を試した
+    if ((backoffUntil[kind] || 0) > now) return true;                       // 利用上限で停止中（エラー表示済み）
+    return !!(c && c.fetchedAt && now - c.fetchedAt < intervalMs(kind));    // まだ取得の時期ではない＝十分新しい
+  }
 
   // ================= 現在値の組み立て =================
   const MANUAL_EXPIRE_MIN = 120;
@@ -210,6 +223,7 @@
     } else if (live.errors.quote) {
       price.reason = live.errors.quote;
     }
+    if (price.code === 'stale' && !verified('quote')) Object.assign(price, { code: 'delayed', label: '更新中…', reason: '最新の株価を取得しています' });
     // --- 為替 ---
     const f = S.cache.fx;
     let ff = C.fxFreshness(f && f.market > 0 ? f : (live.errors.fx ? { error: live.errors.fx } : f), now, s, nowNyIso());
@@ -220,6 +234,7 @@
     if (manualMarketOk) Object.assign(fx, { market: m.market, code: 'manual', label: '手入力', at: m.marketAt, usable: true });
     else if (f && f.market > 0) Object.assign(fx, { market: f.market, code: ff.code, label: ff.label, at: f.ts, usable: ff.usable, reason: ff.reason, warning: ff.warning, source: f.source });
     else if (live.errors.fx) fx.reason = live.errors.fx;
+    if (fx.code === 'stale' && !verified('fx')) Object.assign(fx, { code: 'delayed', label: '更新中…', reason: '最新の為替レートを取得しています' });
     const fxForCalc = { market: fx.usable ? (manualMarketOk ? m.market : f && f.market) : null, applied: fx.applied };
     const fxUsable = fxForCalc.applied > 0 || fxForCalc.market > 0;
     // --- RSI ---
@@ -282,8 +297,8 @@
     if (S.settings.workerUrl) {
       if (live.errors.quote) notify('quote-err', '株価の取得に失敗しました', live.errors.quote, 30);
       if (live.errors.fx) notify('fx-err', '為替レートの取得に失敗しました', live.errors.fx, 30);
-      if (price.code === 'stale') notify('quote-stale', '株価が更新されていません', price.reason || '', 30);
-      if (cur.fx.code === 'stale') notify('fx-stale', '為替レートが更新されていません', cur.fx.reason || '', 30);
+      if (price.code === 'stale' && verified('quote')) notify('quote-stale', '株価が更新されていません', price.reason || '', 30);
+      if (cur.fx.code === 'stale' && verified('fx')) notify('fx-stale', '為替レートが更新されていません', cur.fx.reason || '', 30);
     }
     if (calc && calc.shares === 0 && ps.available > 0) notify(`zero-${ps.nextStage}`, '購入可能株数が0株です', `投入可能額 ${yen(ps.available)} では手数料込みで1株も購入できません`, 24 * 60);
   }
